@@ -1,0 +1,436 @@
+"""
+tool_registry.py - Workstream C: ToolRegistry + PolicyEngine + CommandRunner.
+Replaces ad-hoc if/elif tool dispatch with a formal registry.
+"""
+import os
+import time
+import subprocess
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List, Any, Optional, Callable
+
+
+# ---------------------------------------------------------------------------
+# Risk levels
+# ---------------------------------------------------------------------------
+
+class RiskLevel(str, Enum):
+    READ_ONLY       = "read_only"
+    WORKSPACE_WRITE = "workspace_write"
+    GIT_WRITE       = "git_write"
+    PACKAGE_INSTALL = "package_install"
+    NETWORK         = "network"
+    DESTRUCTIVE     = "destructive"
+
+
+# Human-readable risk descriptions
+RISK_DESCRIPTIONS = {
+    RiskLevel.READ_ONLY:       "Read-only — safe",
+    RiskLevel.WORKSPACE_WRITE: "Writes to workspace files",
+    RiskLevel.GIT_WRITE:       "Modifies git history",
+    RiskLevel.PACKAGE_INSTALL: "Installs packages",
+    RiskLevel.NETWORK:         "Makes network requests",
+    RiskLevel.DESTRUCTIVE:     "Destructive operation",
+}
+
+# Modes that block certain risk levels
+MODE_RISK_BLOCKS: Dict[str, List[RiskLevel]] = {
+    "ask":    [RiskLevel.WORKSPACE_WRITE, RiskLevel.GIT_WRITE, RiskLevel.DESTRUCTIVE, RiskLevel.PACKAGE_INSTALL],
+    "plan":   [RiskLevel.WORKSPACE_WRITE, RiskLevel.GIT_WRITE, RiskLevel.DESTRUCTIVE, RiskLevel.PACKAGE_INSTALL],
+    "review": [RiskLevel.WORKSPACE_WRITE, RiskLevel.GIT_WRITE, RiskLevel.DESTRUCTIVE],
+    "build":  [],  # all allowed
+    "fix":    [],  # all allowed
+}
+
+
+# ---------------------------------------------------------------------------
+# Tool definition
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ToolDefinition:
+    name: str
+    description: str
+    schema: Dict[str, Any]          # JSON schema for arguments
+    risk_level: RiskLevel
+    requires_approval: bool = False  # always prompt user regardless of mode
+    executor: Optional[Callable] = None   # bound at registration time
+
+
+# ---------------------------------------------------------------------------
+# CommandResult — structured output from every command execution
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CommandResult:
+    command: str
+    cwd: str
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration: float
+    timed_out: bool = False
+    truncated: bool = False
+    cancelled: bool = False
+
+    def succeeded(self) -> bool:
+        return self.exit_code == 0 and not self.timed_out and not self.cancelled
+
+    def to_display(self, max_chars: int = 6000) -> str:
+        output_parts = []
+        if self.stdout:
+            output_parts.append(f"--- Stdout ---\n{self.stdout}")
+        if self.stderr:
+            output_parts.append(f"--- Stderr ---\n{self.stderr}")
+        combined = "\n".join(output_parts) if output_parts else "(No output)"
+
+        suffix = ""
+        if self.timed_out:
+            suffix = f"\n[Command timed out after {self.duration:.1f}s]"
+        elif self.cancelled:
+            suffix = "\n[Command cancelled by user]"
+
+        if len(combined) > max_chars:
+            half = max_chars // 2
+            combined = (
+                combined[:half] +
+                f"\n\n... [truncated {len(combined) - max_chars} chars] ...\n\n" +
+                combined[-half:]
+            )
+            self.truncated = True
+
+        return f"Command exited with code {self.exit_code}\n{combined}{suffix}"
+
+
+# ---------------------------------------------------------------------------
+# CommandRunner — structured subprocess execution
+# ---------------------------------------------------------------------------
+
+class CommandRunner:
+    """Single authorized gateway for all subprocess execution."""
+
+    def __init__(self, workspace_root: str, timeout: int = 180):
+        self.workspace_root = workspace_root
+        self.timeout = timeout
+        self.current_process: Optional[subprocess.Popen] = None
+        self.execution_logs: List[CommandResult] = []
+        self.last_error: Optional[str] = None
+
+    def run(self, command: str, cwd: Optional[str] = None) -> CommandResult:
+        """Execute command and return structured CommandResult."""
+        import signal
+        work_dir = cwd or self.workspace_root
+        start = time.time()
+
+        creationflags = 0
+        preexec = None
+        if os.name == "nt":
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            preexec = os.setsid
+
+        try:
+            self.current_process = subprocess.Popen(
+                command,
+                shell=True,
+                cwd=work_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=creationflags,
+                preexec_fn=preexec,
+            )
+
+            timed_out = False
+            cancelled = False
+            stdout, stderr = "", ""
+
+            try:
+                stdout, stderr = self.current_process.communicate(timeout=self.timeout)
+                exit_code = self.current_process.returncode
+            except subprocess.TimeoutExpired:
+                self._kill_current()
+                timed_out = True
+                exit_code = -1
+                try:
+                    stdout, stderr = self.current_process.communicate(timeout=5)
+                except Exception:
+                    pass
+            self.current_process = None
+            duration = time.time() - start
+
+            result = CommandResult(
+                command=command,
+                cwd=work_dir,
+                exit_code=exit_code,
+                stdout=stdout or "",
+                stderr=stderr or "",
+                duration=duration,
+                timed_out=timed_out,
+                cancelled=cancelled,
+            )
+
+            self.execution_logs.append(result)
+            if len(self.execution_logs) > 50:
+                self.execution_logs.pop(0)
+
+            if not result.succeeded():
+                self.last_error = (
+                    f"Command '{command}' exited {exit_code}.\n"
+                    f"Stdout:\n{stdout}\nStderr:\n{stderr}"
+                )
+
+            return result
+
+        except KeyboardInterrupt:
+            self._kill_current()
+            duration = time.time() - start
+            result = CommandResult(
+                command=command, cwd=work_dir,
+                exit_code=-1, stdout="", stderr="",
+                duration=duration, cancelled=True,
+            )
+            self.last_error = f"Command '{command}' cancelled."
+            self.execution_logs.append(result)
+            raise
+
+        except Exception as e:
+            duration = time.time() - start
+            result = CommandResult(
+                command=command, cwd=work_dir,
+                exit_code=-1, stdout="", stderr=str(e),
+                duration=duration,
+            )
+            self.last_error = str(e)
+            self.execution_logs.append(result)
+            return result
+
+    def _kill_current(self):
+        if not self.current_process:
+            return
+        try:
+            import signal
+            if os.name == "nt":
+                self.current_process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                import os as _os
+                _os.killpg(_os.getpgid(self.current_process.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                self.current_process.terminate()
+            except Exception:
+                pass
+        self.current_process = None
+
+    def cancel(self):
+        self._kill_current()
+        self.last_error = "Command was cancelled by the user."
+
+
+# ---------------------------------------------------------------------------
+# PolicyEngine
+# ---------------------------------------------------------------------------
+
+class PolicyDecision(str, Enum):
+    ALLOW  = "allow"
+    ASK    = "ask"
+    DENY   = "deny"
+
+
+@dataclass
+class PolicyRule:
+    """A single policy rule that can allow/ask/deny a tool call."""
+    tool_name: str                      # "*" for all
+    risk_level: Optional[RiskLevel]     # None = match any
+    decision: PolicyDecision
+    reason: str = ""
+
+
+class PolicyEngine:
+    """
+    Evaluates whether a tool call is allowed given:
+    - Current intent mode
+    - Risk level of the tool
+    - User-configured rules
+    - Auto-approve flag
+    """
+
+    def __init__(self, auto_approve: bool = False):
+        self.auto_approve = auto_approve
+        self._rules: List[PolicyRule] = []
+
+    def add_rule(self, rule: PolicyRule):
+        self._rules.append(rule)
+
+    def evaluate(
+        self,
+        tool_name: str,
+        risk_level: RiskLevel,
+        current_mode: str,
+        path: Optional[str] = None,
+    ) -> PolicyDecision:
+        """
+        Returns PolicyDecision for a tool call.
+        Priority: explicit rules → mode-based blocking → auto_approve → ASK
+        """
+        # 1. Check explicit user rules (first match wins)
+        for rule in self._rules:
+            if rule.tool_name in (tool_name, "*"):
+                if rule.risk_level is None or rule.risk_level == risk_level:
+                    return rule.decision
+
+        # 2. Mode-based blocking
+        blocked_risks = MODE_RISK_BLOCKS.get(current_mode, [])
+        if risk_level in blocked_risks:
+            return PolicyDecision.DENY
+
+        # 3. Auto-approve allows everything not denied by mode
+        if self.auto_approve:
+            return PolicyDecision.ALLOW
+
+        # 4. Read-only tools never need approval
+        if risk_level == RiskLevel.READ_ONLY:
+            return PolicyDecision.ALLOW
+
+        # 5. Everything else: ask
+        return PolicyDecision.ASK
+
+
+# ---------------------------------------------------------------------------
+# ToolRegistry
+# ---------------------------------------------------------------------------
+
+class ToolRegistry:
+    """
+    Central registry of all tools with schema, risk level, and executor.
+    Replaces if/elif dispatch chains in agent.py.
+    """
+
+    def __init__(self):
+        self._tools: Dict[str, ToolDefinition] = {}
+
+    def register(self, tool: ToolDefinition):
+        self._tools[tool.name] = tool
+
+    def get(self, name: str) -> Optional[ToolDefinition]:
+        return self._tools.get(name)
+
+    def all_names(self) -> List[str]:
+        return list(self._tools.keys())
+
+    def get_risk(self, name: str) -> RiskLevel:
+        tool = self._tools.get(name)
+        return tool.risk_level if tool else RiskLevel.WORKSPACE_WRITE
+
+    def get_json_schemas(self) -> List[Dict[str, Any]]:
+        """Return tool definitions in OpenAI tool-call format."""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.schema,
+                }
+            }
+            for t in self._tools.values()
+        ]
+
+    @classmethod
+    def build_default(cls) -> "ToolRegistry":
+        """Build the standard Ultron tool registry."""
+        registry = cls()
+
+        tools = [
+            ToolDefinition(
+                name="list_dir",
+                description="List contents of a directory in the workspace.",
+                schema={"type": "object", "properties": {"path": {"type": "string"}}},
+                risk_level=RiskLevel.READ_ONLY,
+            ),
+            ToolDefinition(
+                name="view_file",
+                description="Read content of a file. Use start_line/end_line for large files.",
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "start_line": {"type": "integer"},
+                        "end_line": {"type": "integer"},
+                    },
+                    "required": ["path"],
+                },
+                risk_level=RiskLevel.READ_ONLY,
+            ),
+            ToolDefinition(
+                name="grep_search",
+                description="Search files in the workspace for a text pattern.",
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "path": {"type": "string"},
+                    },
+                    "required": ["query"],
+                },
+                risk_level=RiskLevel.READ_ONLY,
+            ),
+            ToolDefinition(
+                name="git_status",
+                description="Get current git status of the workspace.",
+                schema={"type": "object", "properties": {}},
+                risk_level=RiskLevel.READ_ONLY,
+            ),
+            ToolDefinition(
+                name="write_file",
+                description="Create or overwrite a file with new content.",
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                },
+                risk_level=RiskLevel.WORKSPACE_WRITE,
+            ),
+            ToolDefinition(
+                name="patch_file",
+                description="Edit a file by replacing a specific block of code.",
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "search_content": {"type": "string"},
+                        "replacement_content": {"type": "string"},
+                    },
+                    "required": ["path", "search_content", "replacement_content"],
+                },
+                risk_level=RiskLevel.WORKSPACE_WRITE,
+            ),
+            ToolDefinition(
+                name="run_command",
+                description="Run a shell command in the workspace root.",
+                schema={
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+                risk_level=RiskLevel.WORKSPACE_WRITE,
+            ),
+            ToolDefinition(
+                name="git_commit",
+                description="Stage and commit changes to git.",
+                schema={
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                },
+                risk_level=RiskLevel.GIT_WRITE,
+            ),
+        ]
+
+        for t in tools:
+            registry.register(t)
+
+        return registry

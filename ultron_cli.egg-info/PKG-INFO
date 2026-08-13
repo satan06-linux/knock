@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: ultron-cli
+Version: 0.1.0
+Summary: Advanced local AI coding agent running on Ollama qwen2.5-coder
+Author: Ultron AI Team
+Requires-Python: >=3.8
+Requires-Dist: rich>=13.0.0
+Requires-Dist: prompt_toolkit>=3.0.0
+Requires-Dist: httpx>=0.24.0
+Requires-Dist: click>=8.0.0
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

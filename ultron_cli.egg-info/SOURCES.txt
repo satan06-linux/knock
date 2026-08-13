@@ -1,0 +1,16 @@
+setup.py
+tests/test_agent.py
+ultron/__init__.py
+ultron/agent.py
+ultron/cli.py
+ultron/context.py
+ultron/diff.py
+ultron/models.py
+ultron/repl.py
+ultron/tools.py
+ultron_cli.egg-info/PKG-INFO
+ultron_cli.egg-info/SOURCES.txt
+ultron_cli.egg-info/dependency_links.txt
+ultron_cli.egg-info/entry_points.txt
+ultron_cli.egg-info/requires.txt
+ultron_cli.egg-info/top_level.txt
