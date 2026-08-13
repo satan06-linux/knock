@@ -25,6 +25,7 @@ from ultron.tool_registry import ToolRegistry, PolicyEngine, CommandRunner, Risk
 from ultron.change_tracker import ChangeTracker
 from ultron.eval_suite import MetricsCollector, TaskMetrics
 from ultron.git_workflow import DecisionLog
+from ultron.session_log import SessionLogger
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +241,16 @@ class UltronAgent:
 
         # Stop flag — set by REPL on Ctrl+C to cleanly abort the thinking loop
         self._stop_requested: bool = False
+
+        # Session logger — persistent JSONL audit trail
+        self.session_log = SessionLogger(workspace_root)
+
+        # Load plugins
+        try:
+            from ultron.plugin_loader import register_all_plugins
+            register_all_plugins(self.tool_registry, self.provider_registry)
+        except Exception:
+            pass
         self.console = Console()
         
         self.auto_approve = auto_approve
@@ -483,9 +494,26 @@ class UltronAgent:
         if self._convention_context:
             full_prompt += f"\n\n{self._convention_context}"
         full_prompt += f"\n\n{context_content}"
-        # Inject convention context (populated for FEATURE / REFACTOR tasks)
-        if self._convention_context:
-            full_prompt += f"\n\n{self._convention_context}"
+
+        # Context window awareness — warn if approaching provider limit
+        try:
+            caps = self.model.capabilities()
+            char_estimate = len(full_prompt)
+            token_estimate = char_estimate // 4
+            if caps.context_window > 0:
+                usage_ratio = token_estimate / caps.context_window
+                if usage_ratio > 0.9:
+                    self.console.print(
+                        f"[bold red]⚠ Context at ~{usage_ratio*100:.0f}% of {caps.context_window:,} token limit. "
+                        f"Consider /clear or dropping pinned files.[/bold red]"
+                    )
+                elif usage_ratio > 0.75:
+                    self.console.print(
+                        f"[yellow]Context at ~{usage_ratio*100:.0f}% of {caps.context_window:,} token limit.[/yellow]"
+                    )
+        except Exception:
+            pass
+
         return {"role": "system", "content": full_prompt}
 
     def get_status_dashboard(self) -> Panel:
@@ -553,6 +581,13 @@ class UltronAgent:
             time_budget_seconds=300.0,
         )
         self.current_task.status = TaskStatus.INSPECTING
+
+        # Log task start
+        self.session_log.log_task_start(
+            self.current_task.id,
+            self.current_task.intent.value,
+            user_prompt,
+        )
 
         # Auto-inject conventions for FEATURE/REFACTOR tasks
         self._convention_context = ""
@@ -660,7 +695,19 @@ class UltronAgent:
             
             try:
                 # Use a generator to print content incrementally
-                chat_generator = self.model.chat(active_messages, stream=True)
+                # Try active provider; fall back to fallback provider on connection error
+                try:
+                    chat_generator = self.model.chat(active_messages, stream=True)
+                except Exception as provider_err:
+                    # Try provider fallback
+                    fallback = self.provider_registry._fallback
+                    if fallback and fallback != self.model:
+                        self.console.print(f"[yellow]Provider error: {provider_err}. Trying fallback...[/yellow]")
+                        self.session_log.log_provider_event("fallback", str(getattr(self.model, "provider_name", "unknown")), str(provider_err))
+                        self.model = fallback
+                        chat_generator = self.model.chat(active_messages, stream=True)
+                    else:
+                        raise
                 response_message = None
                 
                 # Buffering variables to avoid streaming raw JSON output
@@ -797,6 +844,15 @@ class UltronAgent:
 
         # Auto-record decision log
         changed_files = list(self.checkpoint.current_task_files.keys())
+
+        # Log task end to session log
+        if self.current_task:
+            self.session_log.log_task_end(
+                self.current_task.id,
+                self.current_task.status.value,
+                changed_files,
+                self.current_task.elapsed(),
+            )
         if changed_files or self.task_commands:
             try:
                 self.decision_log.record(
@@ -1122,6 +1178,11 @@ class UltronAgent:
                 if exit_code == 0 and self.current_task.status == TaskStatus.EDITING:
                     self.current_task.status = TaskStatus.TESTING
             self.console.print(res)
+            # Log tool call
+            self.session_log.log_tool_call(
+                tool=name, args_summary=f"command={cmd}",
+                result=res[:200], exit_code=exit_code, risk_level="workspace_write"
+            )
             return res
             
         elif name == "git_commit":

@@ -55,6 +55,8 @@ class UltronCompleter(Completer):
             "/trace", "/compare", "/flaky-test",
             # Metrics
             "/metrics",
+            # Session + Plugins
+            "/session-log", "/plugins", "/context-status",
         ]
 
     def get_completions(self, document, complete_event):
@@ -176,7 +178,10 @@ class UltronREPL:
         table.add_row("[cyan]/trace <symbol>[/cyan]", "Trace symbol through arch layers (route→service→db)")
         table.add_row("[cyan]/compare [base-branch][/cyan]", "Compare current branch to another")
         table.add_row("[cyan]/flaky-test [cmd][/cyan]", "Re-run test N times to detect flakiness")
-        table.add_row("[cyan]/metrics[/cyan]", "Show task completion rate and session metrics")        
+        table.add_row("[cyan]/metrics[/cyan]", "Show task completion rate and session metrics")
+        table.add_row("[cyan]/session-log [days][/cyan]", "Show detailed session activity log")
+        table.add_row("[cyan]/plugins[/cyan]", "List loaded plugins from ~/.ultron/plugins/")
+        table.add_row("[cyan]/context-status[/cyan]", "Show context window usage vs provider limit")        
         self.console.print(Panel(
             table,
             title="[bold magenta]Ultron CLI Commands[/bold magenta]",
@@ -745,6 +750,15 @@ class UltronREPL:
 
         elif cmd == "/metrics":
             self._cmd_metrics()
+
+        elif cmd == "/session-log":
+            self._cmd_session_log(arg)
+
+        elif cmd == "/plugins":
+            self._cmd_plugins()
+
+        elif cmd == "/context-status":
+            self._cmd_context_status()
 
         else:
             self.console.print(f"[red]Unknown command: {cmd}. Type /help for assistance.[/red]")
@@ -1964,6 +1978,90 @@ class UltronREPL:
             title="[bold cyan]Task Metrics[/bold cyan]",
             border_style="cyan", expand=False
         ))
+
+    def _cmd_session_log(self, arg: str):
+        """Show today's session log or recent activity."""
+        from ultron.session_log import SessionLogger
+        logger = SessionLogger(self.agent.workspace_root)
+        days = int(arg) if arg and arg.isdigit() else 1
+        entries = logger.load_today() if days == 1 else logger.load_recent(days)
+
+        if not entries:
+            self.console.print("[yellow]No session log entries found.[/yellow]")
+            return
+
+        summary = logger.summarize(entries)
+        self.console.print(Panel(
+            f"[bold white]Total tasks:[/bold white]       {summary['total_tasks']}\n"
+            f"[bold white]Tool calls:[/bold white]        {summary['total_tool_calls']}\n"
+            f"[bold white]Model calls:[/bold white]       {summary['total_model_calls']}\n"
+            f"[bold white]Failed tools:[/bold white]      {summary['failed_tool_calls']}\n"
+            f"[bold white]Tasks verified:[/bold white]    {summary['tasks_completed']}\n"
+            f"[bold white]Top tools:[/bold white]         "
+            + ", ".join(f"{k}({v})" for k, v in sorted(summary['tool_usage'].items(), key=lambda x: -x[1])[:5]),
+            title=f"[bold cyan]Session Log ({days} day(s))[/bold cyan]",
+            border_style="cyan", expand=False
+        ))
+
+        # Show last 10 entries
+        self.console.print("\n[bold white]Recent events:[/bold white]")
+        for e in entries[-10:]:
+            ts = e.get("timestamp", "")[:19]
+            ev = e.get("event", "?")
+            detail = ""
+            if ev == "tool_call":
+                detail = f"[green]{e.get('tool')}[/green] → exit {e.get('exit_code')}"
+            elif ev == "task_start":
+                detail = f"[cyan]{e.get('intent')}[/cyan]: {e.get('prompt','')[:50]}"
+            elif ev == "task_end":
+                color = "green" if e.get("status") == "verified" else "yellow"
+                detail = f"[{color}]{e.get('status')}[/{color}] — {', '.join(e.get('files_changed', []))}"
+            elif ev == "model_call":
+                detail = f"[magenta]{e.get('provider')}/{e.get('model')}[/magenta]"
+            self.console.print(f"  [dim]{ts}[/dim]  {ev}: {detail}")
+
+    def _cmd_plugins(self):
+        """List loaded plugins."""
+        from ultron.plugin_loader import discover_plugins, PLUGIN_DIR
+        plugins = discover_plugins()
+        if not plugins:
+            self.console.print(f"[yellow]No plugins found in {PLUGIN_DIR}[/yellow]")
+            self.console.print("[dim]To add a plugin, place a .py file in ~/.ultron/plugins/[/dim]")
+            self.console.print("[dim]Run: python -c \"from ultron.plugin_loader import create_plugin_template; print(create_plugin_template('my_plugin'))\"[/dim]")
+            return
+        self.console.print(f"[bold white]Plugins in {PLUGIN_DIR}:[/bold white]")
+        for p in plugins:
+            name = os.path.basename(p)
+            self.console.print(f"  [green]{name}[/green]  {p}")
+
+    def _cmd_context_status(self):
+        """Show current context window usage vs provider limit."""
+        try:
+            caps = self.agent.model.capabilities()
+            context_content = self.agent.context.build_context_prompt()
+            sys_msg = self.agent._get_system_message()
+            full_text = sys_msg.get("content", "")
+            char_count = len(full_text)
+            token_estimate = char_count // 4
+            limit = caps.context_window
+            ratio = token_estimate / limit if limit > 0 else 0
+            color = "green" if ratio < 0.5 else "yellow" if ratio < 0.75 else "red"
+            bar_width = 30
+            filled = int(ratio * bar_width)
+            bar = "█" * filled + "░" * (bar_width - filled)
+
+            body = (
+                f"[bold white]Provider:[/bold white]      {getattr(self.agent.model, 'provider_name', 'Ollama')}\n"
+                f"[bold white]Model:[/bold white]         {self.agent.model.model_name}\n"
+                f"[bold white]Context limit:[/bold white] {limit:,} tokens\n"
+                f"[bold white]Estimated used:[/bold white] ~{token_estimate:,} tokens ({ratio*100:.0f}%)\n"
+                f"[bold white]Usage:[/bold white]         [{color}]{bar}[/{color}] {ratio*100:.0f}%\n"
+                f"[bold white]Pinned files:[/bold white]  {len(self.agent.context.pinned_files)}\n"
+                f"\n[dim]Tip: /drop files or /clear to free context.[/dim]"
+            )
+            self.console.print(Panel(body, title="[bold cyan]Context Status[/bold cyan]", border_style="cyan", expand=False))
+        except Exception as e:
+            self.console.print(f"[red]Error checking context: {e}[/red]")
 
     def start(self):
         """Starts the interactive prompt loop."""
