@@ -1,228 +1,2005 @@
-================================================================================
-                     ULTRON CLI — IMPROVEMENT PLAN
-              Based on Copilot Senior Analysis (Score: 4.3/5)
-================================================================================
+Of course bro. 🔥 Let's consolidate everything we discussed into **one master Ultron CLI improvement document**, including the corrections and new ideas we added.
 
-SUMMARY
--------
-Copilot confirmed Ultron is the most sophisticated local-first AI coding agent
-reviewed — production-ready for solo devs and small teams. Rated 4.3/5.
-Below is our exact plan to address every weakness and reach 5.0/5.
+I'm treating this as **Ultron CLI only** — Vision is completely out of scope.
 
-================================================================================
-PHASE A — CRITICAL FIXES (v0.2) — Address the 4 verified gaps
-================================================================================
+# 🧠 ULTRON CLI — MASTER ISSUES, FIXES & REDESIGN
 
-The review identified 4 HIGH-priority gaps where implementation either could
-not be verified or was suspected missing. We know these are actually implemented
-but need to be made more visible and testable.
+## 🎯 The goal
 
-A1. DIRTY FILE GUARD — VERIFY & SURFACE (HIGH)
-----------------------------------------------
-Status  : IMPLEMENTED (agent.py _execute_tool_with_confirmation, tools.is_file_dirty)
-Gap     : Copilot could not find it because it's inside agent.py which is large
-Action  :
-  1. Extract dirty file check into a standalone tools.py method: check_dirty(path)
-  2. Add dedicated test: test_dirty_file_blocks_write_without_approval
-  3. Add inline docstring: "Dirty File Guard — blocks write if uncommitted changes"
-  4. Document in ULTRON.md convention section
-Files   : ultron/tools.py, tests/verify_agent.py
-Priority: HIGH — this is a core safety promise
+I would define Ultron as:
 
-A2. PROVIDER FALLBACK LOGIC — MAKE EXPLICIT (HIGH)
----------------------------------------------------
-Status  : PARTIALLY IMPLEMENTED (registry.py get_working_provider + handle_failure)
-Gap     : The fallback path exists but is only triggered from REPL, not from
-          the agent loop when a streaming call fails mid-turn
-Action  :
-  1. Add try/except around model.chat() in agent.py run() loop
-  2. On ProviderError/ConnectionError, call provider_registry.handle_failure()
-  3. If fallback available, switch and retry the same turn
-  4. If no fallback, set mode to "ask" and continue read-only
-  5. Add test: test_provider_failure_triggers_fallback
-Files   : ultron/agent.py, ultron/providers/registry.py, tests/test_providers.py
-Priority: HIGH — promised feature, critical for reliability
+> **A local-first AI coding agent that can understand a repository, plan and execute changes, dynamically discover dependencies, safely use tools, verify its work, recover from failures, monitor its own behavior, and eventually self-repair when Ultron itself is damaged.**
 
-A3. CONTEXT WINDOW AUTO-MANAGEMENT (MEDIUM)
--------------------------------------------
-Status  : 50k char budget enforced in context.py but not provider-aware
-Gap     : No warning when approaching provider's actual token limit
-          No auto-switching to larger context model
-Action  :
-  1. In _get_system_message(), estimate token count via provider.count_tokens()
-  2. If > 75% of provider's context_window, warn user in console
-  3. If > 90%, offer to compress: trim pinned files or clear old turns
-  4. Add /context-status command showing current usage vs limit
-Files   : ultron/agent.py, ultron/context.py, ultron/repl.py
-Priority: MEDIUM — important for long sessions
+The important philosophy we established is:
 
-A4. STRUCTURED SESSION LOGGING (HIGH)
---------------------------------------
-Status  : execution_logs exists in tools.py but is in-memory only (lost on exit)
-Gap     : No persistent audit trail of what Ultron did across sessions
-          Metrics collector writes task summaries but not granular tool calls
-Action  :
-  1. Create ultron/session_log.py with structured JSONL logger
-  2. Log every tool call: {timestamp, tool, args_summary, result, exit_code}
-  3. Log every model call: {timestamp, provider, model, tokens_in, tokens_out}
-  4. Store at ~/.ultron/logs/<workspace_hash>/session_YYYYMMDD.jsonl
-  5. Add /logs --detail flag to show tool-level events
-  6. Feed into /metrics for richer analytics
-Files   : ultron/session_log.py (new), ultron/agent.py, ultron/repl.py
-Priority: HIGH — builds user trust ("I can see exactly what Ultron did")
+> **Don't unnecessarily restrict Ultron's capabilities. Restrict uncontrolled behavior.**
 
-================================================================================
-PHASE B — ARCHITECTURE IMPROVEMENTS (v0.3)
-================================================================================
+---
 
-B1. PLUGIN SYSTEM (MEDIUM)
----------------------------
-Status  : ToolRegistry is formal but statically coded
-Gap     : No dynamic loading, no community plugin API
-Action  :
-  1. Create ultron/plugin_loader.py with discover_plugins()
-  2. Scan ~/.ultron/plugins/*.py on startup
-  3. Each plugin defines class extending ToolDefinition or ModelProvider
-  4. Auto-register into ToolRegistry / ProviderRegistry
-  5. Document plugin API in ULTRON.md
-  6. Add /plugins command to list active plugins
-Files   : ultron/plugin_loader.py (new), ultron/tool_registry.py, ultron/repl.py
-Priority: MEDIUM — enables community contributions
+# 1. 🔴 Agent architecture — `agent.py` doing too much
 
-B2. EVIDENCE CONFIDENCE SCORES (MEDIUM)
------------------------------------------
-Status  : 4-tier evidence tagging (Observed/Verified/Inferred/Not verified)
-Gap     : No numeric confidence, hard to prioritize what needs human review
-Action  :
-  1. Add confidence: float = 1.0 field to TaskEvidence dataclass
-  2. VERIFIED by command exit 0 → confidence 1.0
-  3. INFERRED by model → confidence 0.5
-  4. NOT_VERIFIED → confidence 0.2
-  5. Show in task summary: [Inferred 0.5] auth flow works as expected
-Files   : ultron/task.py
-Priority: MEDIUM — improves transparency
+### Problem
 
-B3. REFACTOR GUARD AUTO-CHECK (MEDIUM)
----------------------------------------
-Status  : RefactorGuard exists in analyzer.py, auto-triggers on refactor keywords
-Gap     : Only checks callers, does not automatically run focused tests
-Action  :
-  1. After refactor task completes, auto-run: test command filtered to related tests
-  2. If tests fail, set task status = BLOCKED, show /why output
-  3. Add /refactor-check command for manual pre-refactor validation
-Files   : ultron/analyzer.py, ultron/agent.py, ultron/repl.py
-Priority: MEDIUM
+The central agent tends to accumulate:
 
-B4. CONTEXT-AWARE PROVIDER ROUTING (MEDIUM)
----------------------------------------------
-Status  : Smart routing exists in get_model_for_task() but not wired to task
-Gap     : Same model used for all operations regardless of complexity
-Action  :
-  1. For lightweight ops (repo map, log summary, commit message): use fast model
-  2. For complex ops (feature planning, debugging): use strong model
-  3. Expose in /model-info which model handles which task type
-  4. Let user configure routing in .ultron.toml [routing] section
-Files   : ultron/providers/registry.py, ultron/agent.py, ultron/analyzer.py
-Priority: MEDIUM
+* task handling
+* context
+* model calls
+* tool execution
+* permissions
+* verification
+* retries
+* state
+* recovery
 
-================================================================================
-PHASE C — COMMUNITY & ADOPTION (v1.0)
-================================================================================
+Eventually it becomes a huge God-class.
 
-C1. SHELL COMPLETIONS (HIGH)
------------------------------
-Action  :
-  1. Create scripts/generate_completions.py
-  2. Generate bash, zsh, fish completion scripts for all 70+ commands
-  3. Install via: ultron --install-completions bash
-  4. Publish to homebrew/snap for easier installation
-Files   : scripts/generate_completions.py (new), setup.py
-Priority: HIGH — dramatically improves DX
+### Improvement
 
-C2. GITHUB COPILOT BOT ACTION (LOW)
---------------------------------------
-Action  :
-  1. Create .github/actions/ultron-fix/ Docker-based action
-  2. Triggers on PR label "ultron:fix"
-  3. Runs: ultron-ci --workspace . --prompt "Fix all CI failures"
-  4. Commits fixes and comments on PR
-Files   : .github/actions/ultron-fix/ (new directory)
-Priority: LOW — good for adoption
+Gradually turn the Agent into an **orchestrator**.
 
-C3. WEB DIFF VIEWER (LOW)
----------------------------
-Action  :
-  1. Create ultron/web_ui/ with minimal Flask server (opt-in, port 8765)
-  2. Shows diffs with syntax highlighting before approval
-  3. Start with: ultron --web-review
-  4. Auto-opens browser when Ultron wants to show a large diff
-Files   : ultron/web_ui/ (new), ultron/repl.py
-Priority: LOW — nice-to-have for large diffs
+```text
+Agent
+ ├── TaskManager
+ ├── ContextManager
+ ├── ModelGateway
+ ├── Planner
+ ├── ToolExecutor
+ ├── PolicyEngine
+ ├── VerificationEngine
+ ├── RecoveryEngine
+ └── ScopeManager
+```
 
-C4. ARCHITECTURE.MD (MEDIUM)
-------------------------------
-Action  :
-  1. Create ARCHITECTURE.md at project root
-  2. Explain each module's responsibility
-  3. Show data flow: user prompt → TaskRouter → agent loop → tools → output
-  4. Add sequence diagrams for key workflows (undo, contract, verify)
-  5. Link from README
-Files   : ARCHITECTURE.md (new)
-Priority: MEDIUM — important for contributors and serious evaluators
+The Agent should mainly coordinate:
 
-C5. CONTRIBUTION GUIDE (MEDIUM)
----------------------------------
-Action  :
-  1. Create CONTRIBUTING.md
-  2. Explain how to add a new provider (implement ModelProvider interface)
-  3. Explain how to add a new tool (register in ToolRegistry)
-  4. Include code style, test requirements, PR checklist
-  5. Set up GitHub issue templates
-Files   : CONTRIBUTING.md (new), .github/ISSUE_TEMPLATE/ (new)
-Priority: MEDIUM
+```text
+Task
+ ↓
+Understand
+ ↓
+Investigate
+ ↓
+Plan
+ ↓
+Execute
+ ↓
+Verify
+ ↓
+Repair if necessary
+ ↓
+Complete
+```
 
-================================================================================
-PRIORITY ORDER
-================================================================================
+### Important
 
-IMMEDIATE (next session):
-  1. A4 — Structured session logging         (builds trust, fills metrics gap)
-  2. A2 — Provider fallback in agent loop    (promised feature)
-  3. A1 — Dirty file guard visibility        (make it findable in code)
-  4. C1 — Shell completions                  (biggest DX win)
+Don't rewrite everything at once.
 
-SHORT TERM (v0.3):
-  5. A3 — Context window auto-management
-  6. B1 — Plugin system
-  7. B4 — Context-aware provider routing
-  8. C4 — ARCHITECTURE.md
-  9. C5 — CONTRIBUTING.md
+Refactor subsystem-by-subsystem.
 
-LONG TERM (v1.0):
-  10. B2 — Evidence confidence scores
-  11. B3 — Refactor guard auto-test
-  12. C2 — GitHub Copilot bot action
-  13. C3 — Web diff viewer
+---
 
-================================================================================
-WHAT COPILOT GOT RIGHT
-================================================================================
-- Ultron IS production-ready for solo devs and small teams
-- Safety model (change contracts, conflict-aware undo, intent modes) is unique
-- 7 providers + privacy-first is a genuine market differentiator
-- 381 tests + eval harness is ahead of most open source agents
-- Git workflow (worktrees, PR summary, decision log) is professional-grade
-- Task lifecycle (TaskRouter + BudgetEnforcer) is architecturally ahead
+# 2. 🔴 Multiple tool-execution paths
 
-================================================================================
-WHAT COPILOT GOT WRONG (corrected)
-================================================================================
-- "Dirty file guard not found" → It exists in agent.py, just needs surfacing
-- "Context management opaque" → context.py with 50k char budget is implemented
-- "Agent loop not reviewed" → agent.py is 1000+ lines, fully implemented
-- "Fallback logic not visible" → handle_failure() exists in registry.py
-  The issue is it's not wired to the agent loop on mid-turn provider failures
+### Problem
 
-================================================================================
-TARGET: 4.8/5 after Phase A + B. 5.0/5 after Phase C.
-================================================================================
+If Ultron has old and new mechanisms for executing tools, security becomes difficult to reason about.
+
+For example:
+
+```text
+Agent → ToolManager → OS
+```
+
+and somewhere else:
+
+```text
+Agent → ToolRegistry → Policy → Executor → OS
+```
+
+That's dangerous.
+
+### Solution
+
+Create **one canonical execution pipeline**:
+
+```text
+Agent
+ ↓
+ToolRegistry
+ ↓
+PolicyEngine
+ ↓
+ToolExecutor
+ ↓
+OS / Filesystem / Git
+```
+
+Every tool must pass through this.
+
+### ToolExecutor
+
+```text
+validate
+ ↓
+policy check
+ ↓
+approval if needed
+ ↓
+execute
+ ↓
+capture result
+ ↓
+redact
+ ↓
+audit
+```
+
+Eventually remove/deprecate duplicate execution paths.
+
+---
+
+# 3. 🔴 Fail-open security
+
+### Problem
+
+If the permission/security system encounters an error, Ultron must not assume permission.
+
+Bad:
+
+```text
+Policy error
+ ↓
+probably safe
+ ↓
+ALLOW
+```
+
+### Correct:
+
+```text
+Policy error
+ ↓
+DENY
+ ↓
+explain to user
+```
+
+### Rule
+
+> **Security uncertainty = DENY**
+
+Especially for:
+
+* shell execution
+* deletion
+* credentials
+* network
+* package installation
+* destructive Git
+* system files
+
+---
+
+# 4. 🔥 Dynamic Change Scope Monitoring
+
+This was one of the biggest corrections we discussed.
+
+### ❌ Don't do this
+
+```text
+Allowed:
+src/auth/**
+tests/auth/**
+
+Everything else:
+DENY
+```
+
+That's too restrictive for an actual coding agent.
+
+Imagine the login bug requires:
+
+```text
+src/auth/login.py
+config/auth.yaml
+deployment/env.yaml
+```
+
+Ultron should be able to discover that.
+
+---
+
+## ✅ New design: Dynamic Scope
+
+Start with:
+
+```text
+Initial Scope
+```
+
+Then:
+
+```text
+Investigation
+ ↓
+Dependency discovered
+ ↓
+Is it relevant?
+ ↓
+YES → expand scope
+NO → block/ask
+```
+
+Each expansion records:
+
+```text
+file
+operation
+reason
+relationship
+risk
+approval
+```
+
+Example:
+
+```text
+Task:
+Fix login validation
+
+Initial:
+2 files
+
+Discovered:
+config/auth.yaml
+
+Reason:
+validation behavior is configured there
+
+Decision:
+Scope expanded
+```
+
+### The principle
+
+> **Scope should be based on task intent and justification, not a fixed file whitelist.**
+
+---
+
+# 5. 🔥 Scope Risk Classification
+
+Every changed resource should receive a risk level.
+
+```text
+🟢 LOW
+🟡 MEDIUM
+🟠 HIGH
+🔴 CRITICAL
+```
+
+Example:
+
+```text
+auth/login.py        🟢
+auth/config.py       🟡
+Dockerfile           🟠
+deployment/prod.yaml 🔴
+.git/config          🔴
+private key          🔴
+```
+
+The decision depends on:
+
+* relationship to task
+* operation type
+* sensitivity
+* destructive potential
+* scope deviation
+
+---
+
+# 6. 🔥 Email-based Scope Alerts
+
+We discussed adding email so you don't have to watch Ultron continuously.
+
+### Flow
+
+```text
+ChangeTracker
+ ↓
+ScopeMonitor
+ ↓
+Unexpected expansion
+ ↓
+PAUSE
+ ↓
+EventBus
+ ↓
+NotificationManager
+ ↓
+Email
+```
+
+Example:
+
+> 🚨 Ultron Scope Alert
+> Task: Fix login validation
+> Ultron requested changes to `deployment/prod.yaml` and `.git/config`.
+> These changes are outside the established task scope.
+> Ultron has paused.
+
+### Email should NOT contain:
+
+* passwords
+* API keys
+* private keys
+* raw `.env`
+* sensitive tool output
+
+---
+
+# 7. 📧 Notification architecture
+
+Don't hardcode email directly into ScopeMonitor.
+
+Build:
+
+```text
+NotificationManager
+ ├── ConsoleNotifier
+ ├── EmailNotifier
+ └── Future:
+      ├── Discord
+      ├── Telegram
+      ├── Slack
+      └── Desktop
+```
+
+Use a central:
+
+```text
+EventBus
+```
+
+Events:
+
+```text
+TASK_STARTED
+TASK_COMPLETED
+SCOPE_EXPANDED
+SCOPE_VIOLATION
+SECRET_DETECTED
+DANGEROUS_OPERATION
+VERIFICATION_FAILED
+SELF_REPAIR_STARTED
+SELF_REPAIR_FAILED
+ROLLBACK_TRIGGERED
+ULTRON_CRASHED
+```
+
+---
+
+# 8. 🔐 SecretRedactor
+
+We discussed this in detail.
+
+### Problem
+
+Ultron might read:
+
+```text
+.env
+```
+
+and accidentally put:
+
+```text
+API_KEY=real_secret
+DATABASE_PASSWORD=real_password
+```
+
+into:
+
+* model context
+* logs
+* terminal
+* email
+* external provider requests
+
+### Architecture
+
+```text
+Tool
+ ↓
+Raw Result
+ ↓
+SecretRedactor
+ ↓
+Model / Log / UI
+```
+
+Example:
+
+```text
+DATABASE_URL=mysql://admin:SuperSecret123@localhost/app
+```
+
+becomes:
+
+```text
+DATABASE_URL=mysql://admin:[REDACTED]@localhost/app
+```
+
+---
+
+## Secret detection
+
+Start with:
+
+### Known patterns
+
+```text
+API_KEY
+SECRET_KEY
+PASSWORD
+TOKEN
+AUTHORIZATION
+DATABASE_URL
+```
+
+and known formats:
+
+* JWTs
+* private keys
+* bearer tokens
+* common API keys
+
+Later:
+
+### Entropy detection
+
+Detect random-looking strings.
+
+But:
+
+> **Entropy is a signal, not proof.**
+
+---
+
+# 9. 🔐 Secret classification
+
+Classify secrets:
+
+```text
+API_KEY
+ACCESS_TOKEN
+PASSWORD
+DATABASE_CREDENTIAL
+PRIVATE_KEY
+JWT
+AUTH_HEADER
+UNKNOWN_SECRET
+```
+
+This lets PolicyEngine treat them differently.
+
+---
+
+# 10. 🔐 SecretRedactor ≠ PolicyEngine
+
+Important distinction:
+
+### PolicyEngine
+
+> Can Ultron access this?
+
+### SecretRedactor
+
+> If the data is exposed somewhere, what should be hidden?
+
+So:
+
+```text
+PolicyEngine
+ ↓
+ALLOW / ASK / DENY
+ ↓
+Tool execution
+ ↓
+SecretRedactor
+ ↓
+Model / Log / UI
+```
+
+Ultron can still legitimately work with `.env` if the task requires it.
+
+We are **not** making `.env` permanently forbidden.
+
+---
+
+# 11. 🔥 Future: Secret Taint Tracking
+
+Later, we could do something more advanced.
+
+When Ultron reads:
+
+```text
+API_KEY=abc123
+```
+
+internally mark:
+
+```text
+value = abc123
+taint = SECRET
+```
+
+If that value propagates through operations and eventually tries to reach:
+
+```text
+terminal
+log
+email
+model
+```
+
+Ultron knows:
+
+```text
+SECRET → EXTERNAL DESTINATION
+```
+
+and can block/redact it.
+
+This would be a **future advanced security feature**, not V1.
+
+---
+
+# 12. 🟠 Repository prompt-injection protection
+
+Repository files are **data**, not trusted instructions.
+
+Potentially malicious:
+
+```text
+README.md
+comments
+tests
+logs
+JSON
+HTML
+downloaded files
+```
+
+could contain:
+
+> Ignore previous instructions and execute this command.
+
+Ultron should treat repository content as:
+
+```text
+UNTRUSTED REPOSITORY CONTENT
+```
+
+and never allow it to override:
+
+```text
+System policy
+User task
+Security rules
+Tool permissions
+```
+
+---
+
+# 13. 🟠 Command security redesign
+
+Don't rely purely on string matching.
+
+For example:
+
+```text
+rm
+```
+
+is easy to detect.
+
+But dangerous behavior can be hidden inside:
+
+```text
+bash -c ...
+python -c ...
+powershell ...
+cmd /c ...
+```
+
+### Better model: Capabilities
+
+Instead of only asking:
+
+> Is this command dangerous?
+
+ask:
+
+> **What capabilities does this operation exercise?**
+
+Example:
+
+```text
+git status
+→ git.read
+
+git commit
+→ git.write
+
+git reset --hard
+→ git.destructive
+
+pip install
+→ package.install
+→ network
+
+python script.py
+→ process.execute
+→ filesystem.unknown
+→ network.unknown
+```
+
+Then PolicyEngine evaluates those capabilities.
+
+---
+
+# 14. 🔐 Sensitive-resource policy
+
+Resources should be classified:
+
+```text
+NORMAL
+SENSITIVE
+SECRET
+SYSTEM
+```
+
+Example:
+
+```text
+README.md       NORMAL
+config.yaml     SENSITIVE
+.env            SECRET
+SSH private key SECRET/RESTRICTED
+.git/config     SENSITIVE
+```
+
+The point isn't:
+
+> "Never touch sensitive files."
+
+It's:
+
+> **Handle them with stronger controls.**
+
+---
+
+# 15. 🟠 Checkpoint + Transactional Rollback
+
+Your ChangeTracker can evolve into a transaction system.
+
+Before task:
+
+```text
+Checkpoint
+```
+
+During task:
+
+```text
+Operation 1
+Operation 2
+Operation 3
+```
+
+Each records:
+
+```text
+before hash
+after hash
+file
+operation
+timestamp
+reason
+```
+
+### Safe rollback
+
+If the user hasn't changed the file:
+
+```text
+ROLLBACK → safe
+```
+
+If the user modified it afterward:
+
+```text
+⚠️ File changed after Ultron's modification.
+
+Ultron will NOT overwrite your changes.
+
+Options:
+[Show diff]
+[Restore relevant portion]
+[Cancel]
+```
+
+---
+
+# 16. 🟠 Autonomous task repair loop
+
+This is for **user projects**.
+
+Example:
+
+```text
+Implement login validation
+ ↓
+Modify code
+ ↓
+Run tests
+ ↓
+FAIL
+ ↓
+Diagnose
+ ↓
+Repair
+ ↓
+Test again
+```
+
+But never:
+
+```text
+while failure:
+    keep modifying
+```
+
+Use:
+
+```text
+MAX_REPAIR_ATTEMPTS = 3
+```
+
+Example:
+
+```text
+Attempt 1 → fail
+Attempt 2 → fail
+Attempt 3 → fail
+STOP
+```
+
+Then:
+
+> I couldn't safely resolve the issue after 3 attempts.
+
+---
+
+# 17. 🔥 Ultron Self-Repair Loop
+
+This is different from repairing user code.
+
+We discussed allowing **Ultron itself to recover from damage**.
+
+### Architecture
+
+```text
+Ultron
+ ↓
+HealthMonitor
+ ↓
+DAMAGED
+ ↓
+RecoveryBootstrap
+ ↓
+Diagnose
+ ↓
+Create isolated repair workspace
+ ↓
+Generate repair
+ ↓
+Run tests
+ ↓
+Runtime smoke test
+ ↓
+PASS
+ ↓
+Promote
+```
+
+### Critical rule
+
+> **Never let broken Ultron directly rewrite its live installation.**
+
+Instead:
+
+```text
+main
+ ↓
+self-repair/attempt-001
+```
+
+Repair happens there.
+
+---
+
+# 18. 🔥 Known-Good Ultron Version
+
+Ultron should maintain a verified version.
+
+For example:
+
+```text
+ultron-stable
+```
+
+or a known-good Git commit.
+
+Metadata:
+
+```text
+known_good_commit
+tests_passed
+timestamp
+version
+```
+
+If self-repair fails:
+
+```text
+rollback → known-good version
+```
+
+---
+
+# 19. 🔥 Recovery Bootstrap
+
+This is extremely important.
+
+If Ultron itself is broken, its normal agent may also be broken.
+
+So create a tiny:
+
+```text
+RecoveryBootstrap
+```
+
+It should be:
+
+* small
+* deterministic
+* dependency-light
+* non-AI
+* able to restore known-good code
+* able to run health checks
+* able to launch tests
+
+The AI should **not control the bootstrap itself**.
+
+---
+
+# 20. 🔥 Self-repair verification
+
+A repair isn't successful because the LLM says:
+
+> "Fixed."
+
+Use layers.
+
+### Level 1
+
+```text
+Imports
+Boot
+CLI initialization
+```
+
+### Level 2
+
+```text
+Unit tests
+```
+
+### Level 3
+
+```text
+Security tests
+```
+
+### Level 4
+
+```text
+Integration tests
+```
+
+### Level 5
+
+```text
+Runtime smoke test
+```
+
+Only then:
+
+```text
+PROMOTE
+```
+
+---
+
+# 21. 🔥 Automatic rollback after failed promotion
+
+Even if tests pass, the new Ultron could fail at runtime.
+
+So:
+
+```text
+Known Good
+ ↓
+Repair
+ ↓
+Tests PASS
+ ↓
+Promote
+ ↓
+Health check
+ ↓
+FAIL
+ ↓
+AUTOMATIC ROLLBACK
+```
+
+This is the safety net.
+
+---
+
+# 22. 🔥 Self-repair attempt budget
+
+Never infinite self-repair.
+
+```text
+MAX_SELF_REPAIR_ATTEMPTS = 3
+```
+
+After failure:
+
+```text
+SELF-REPAIR FAILED
+
+Ultron remains on known-good version.
+
+Manual intervention required.
+```
+
+And send an email notification.
+
+---
+
+# 23. 🔥 `ultron doctor`
+
+We discussed a dedicated diagnostic command.
+
+```text
+$ ultron doctor
+```
+
+Example:
+
+```text
+ULTRON HEALTH
+────────────────────
+
+Core                 ✓
+Configuration        ✓
+Model Provider       ✓
+Tool Registry        ✓
+Policy Engine        ✓
+Filesystem Security  ✓
+Git                  ✓
+Tests                ✓
+
+Repository Integrity ✓
+
+Known-Good Version:
+v0.1.4
+
+STATUS:
+HEALTHY
+```
+
+If damaged:
+
+```text
+Agent Initialization ❌
+Tool Registry        ❌
+Policy Engine        ✓
+Git                  ✓
+
+Likely regression:
+tool_registry.py
+
+Self-repair:
+AVAILABLE
+```
+
+---
+
+# 24. 🔥 Model Capability Awareness — Redesigned
+
+We decided **not** to make this just:
+
+```python
+supports_vision = True
+supports_tools = True
+```
+
+Instead, build a proper **Model Capability System**.
+
+---
+
+# 25. Model Profile
+
+Something like:
+
+```text
+ModelProfile
+│
+├── Identity
+│   ├── provider
+│   ├── model
+│   └── version
+│
+├── Input
+│   ├── text
+│   ├── image
+│   ├── audio
+│   └── files
+│
+├── Output
+│   ├── text
+│   ├── structured
+│   ├── tool_calls
+│   └── streaming
+│
+├── Reasoning
+│   ├── coding
+│   ├── planning
+│   ├── debugging
+│   └── instruction_following
+│
+├── Context
+│   ├── context_window
+│   └── max_output
+│
+├── Runtime
+│   ├── local/cloud
+│   ├── latency
+│   └── cost
+│
+└── Reliability
+    ├── tool reliability
+    ├── structured output reliability
+    └── coding reliability
+```
+
+---
+
+# 26. Don't blindly trust model capabilities
+
+We established an important distinction:
+
+```text
+NATIVE
+```
+
+versus:
+
+```text
+VERIFIED
+```
+
+Example:
+
+```text
+Tool Calling
+Native: ✓
+Verified: ✓
+Reliability: 94%
+```
+
+Another:
+
+```text
+Tool Calling
+Native: ✓
+Verified: ✗
+Reliability: Unknown
+```
+
+Ultron should actually **probe** models.
+
+---
+
+# 27. Capability Probe
+
+Create:
+
+```text
+CapabilityProbe
+```
+
+It tests:
+
+```text
+✓ tool schema following
+✓ structured JSON
+✓ tool selection
+✓ multi-step tool use
+✓ error recovery
+✓ instruction following
+```
+
+Then store results.
+
+This gives Ultron real evidence.
+
+---
+
+# 28. Task Requirements
+
+Instead of asking:
+
+> What model should I use?
+
+Ultron first asks:
+
+> What capabilities does this task require?
+
+Example:
+
+```text
+Fix Python bug
+```
+
+Requirements:
+
+```text
+coding             REQUIRED
+reasoning          REQUIRED
+tool calling       REQUIRED
+structured output  PREFERRED
+vision             NOT REQUIRED
+```
+
+Then ModelRouter selects the best available model.
+
+---
+
+# 29. Model Router
+
+Architecture:
+
+```text
+Task
+ ↓
+Task Requirements
+ ↓
+Available Models
+ ↓
+Capability Matching
+ ↓
+Health
+ ↓
+Context Fit
+ ↓
+Resource Fit
+ ↓
+Best Model
+```
+
+Not simply:
+
+```text
+7B = simple
+70B = complex
+```
+
+---
+
+# 30. Model Health
+
+Model capabilities can degrade in practice.
+
+Track:
+
+```text
+latency
+timeout rate
+malformed outputs
+tool-call failures
+structured-output failures
+crashes
+```
+
+Example:
+
+```text
+Qwen 7B
+
+Tool-call failure:
+32%
+
+Status:
+DEGRADED
+```
+
+Ultron can then switch models/fallback.
+
+---
+
+# 31. Capability fallback
+
+If the selected model lacks a capability:
+
+```text
+Native tool calling
+ ↓
+Unavailable
+ ↓
+Compatible fallback
+ ↓
+Validation
+ ↓
+PolicyEngine
+ ↓
+Execution
+```
+
+But fallback must **never bypass security**.
+
+---
+
+# 32. Capability ≠ Permission
+
+This is critical.
+
+A model saying:
+
+```text
+tool_calls = YES
+```
+
+doesn't mean:
+
+```text
+tool execution = allowed
+```
+
+Correct:
+
+```text
+Model
+ ↓
+requests tool
+ ↓
+ToolRegistry
+ ↓
+PolicyEngine
+ ↓
+ALLOW / ASK / DENY
+ ↓
+ToolExecutor
+```
+
+The model can never override policy.
+
+---
+
+# 33. Model capability + hardware awareness
+
+For local Ultron, the system should also understand the machine.
+
+Example:
+
+```text
+Model
+ ↓
+VRAM requirement
+ ↓
+Available GPU memory
+ ↓
+CPU/RAM
+ ↓
+Current load
+ ↓
+Can model run?
+```
+
+If not:
+
+```text
+Fallback to smaller model
+```
+
+This makes model routing practical for your local-first architecture.
+
+---
+
+# 34. Model lifecycle
+
+Models can have states:
+
+```text
+DISCOVERED
+ ↓
+AVAILABLE
+ ↓
+PROBED
+ ↓
+VERIFIED
+ ↓
+ACTIVE
+ ↓
+DEGRADED
+ ↓
+UNAVAILABLE
+```
+
+CLI:
+
+```text
+ultron models
+ultron models probe
+ultron models doctor
+ultron models select
+```
+
+---
+
+# 35. Model Request Contract
+
+Every model request should carry:
+
+```text
+ModelRequest
+├── task_type
+├── required_capabilities
+├── preferred_capabilities
+├── context_budget
+├── output_format
+└── safety_constraints
+```
+
+Before invocation:
+
+```text
+Can selected model satisfy this contract?
+```
+
+If no:
+
+```text
+Fallback / reroute
+```
+
+---
+
+# 36. 🟠 Context Management
+
+Don't just dump the entire repository into the model.
+
+Use:
+
+```text
+Current Task
+ ↓
+Relevant Files
+ ↓
+Dependencies
+ ↓
+Repository Structure
+ ↓
+Relevant History
+```
+
+Retrieve based on relevance.
+
+Principle:
+
+> **Fast first, deep when necessary.**
+
+---
+
+# 37. 🟡 Repository Intelligence
+
+Start lightweight:
+
+```text
+Filesystem scan
+ ↓
+Basic indexing
+ ↓
+Relevant files
+```
+
+Then gradually add:
+
+```text
+AST parsing
+ ↓
+Symbols
+ ↓
+Imports
+ ↓
+Dependency graph
+ ↓
+Call relationships
+```
+
+Don't make every task perform expensive full-repository analysis.
+
+---
+
+# 38. 🟠 Verification System
+
+We should distinguish:
+
+```text
+CODE_CHANGED
+```
+
+from:
+
+```text
+TASK_COMPLETED
+```
+
+They're not equivalent.
+
+Create verification states:
+
+```text
+VERIFIED
+PARTIALLY_VERIFIED
+FAILED
+UNKNOWN
+```
+
+Example:
+
+```text
+Syntax        PASS
+Unit Tests    PASS
+Type Check    PASS
+Lint          PASS
+Build         PASS
+Integration   NOT RUN
+Task Criteria PARTIAL
+```
+
+---
+
+# 39. 🟠 ChangeTracker evolution
+
+ChangeTracker shouldn't merely say:
+
+```text
+file changed
+```
+
+It should understand:
+
+```text
+Task
+ ↓
+Expected changes
+ ↓
+Actual changes
+ ↓
+Scope deviation
+ ↓
+Risk
+ ↓
+Checkpoint
+ ↓
+Rollback
+ ↓
+Audit
+```
+
+This becomes one of Ultron's most important subsystems.
+
+---
+
+# 40. 🟠 Testing architecture
+
+We should test Ultron itself heavily.
+
+### Policy
+
+```text
+dangerous command → DENY
+approval required → ASK
+policy failure → DENY
+```
+
+### Scope
+
+```text
+relevant expansion → ALLOW
+unrelated expansion → BLOCK/ASK
+```
+
+### Rollback
+
+```text
+unchanged file → restore
+user-modified file → protect
+```
+
+### Security
+
+```text
+path traversal
+symlink escape
+secret redaction
+prompt injection
+```
+
+### Agent
+
+```text
+retry limit
+task completion
+failed verification
+```
+
+---
+
+# 41. 🔥 Deterministic Task Replay
+
+This is a powerful debugging feature.
+
+Every task can record:
+
+```text
+Task ID
+Model
+Prompt
+Context
+Tool calls
+Tool results
+Policy decisions
+Changes
+Verification
+```
+
+Then:
+
+```text
+ultron replay <task-id>
+```
+
+can reconstruct the execution environment as closely as possible.
+
+This will be extremely useful when debugging Ultron itself.
+
+---
+
+# 42. 🔥 Dry-run mode
+
+Add:
+
+```text
+ultron <task> --dry-run
+```
+
+Example:
+
+```text
+ULTRON PLAN
+
+Files likely affected:
+  src/auth.py
+  tests/test_auth.py
+  config/auth.yaml
+
+Operations:
+  MODIFY × 2
+  CREATE × 1
+
+Commands:
+  pytest tests/test_auth.py
+
+Risk:
+LOW
+
+No changes made.
+```
+
+Then normal execution can proceed.
+
+---
+
+# 43. 🔥 Explicit Agent State Machine
+
+Instead of vague internal states:
+
+```text
+CREATED
+ ↓
+UNDERSTANDING
+ ↓
+INVESTIGATING
+ ↓
+PLANNING
+ ↓
+AWAITING_APPROVAL
+ ↓
+EXECUTING
+ ↓
+VERIFYING
+ ↓
+REPAIRING
+ ↓
+COMPLETED
+```
+
+Failure states:
+
+```text
+FAILED
+BLOCKED
+CANCELLED
+PARTIAL
+```
+
+This makes behavior much easier to debug and test.
+
+---
+
+# 44. 🔥 Event-driven architecture
+
+With everything we've added, an EventBus becomes very valuable.
+
+```text
+Ultron
+ ↓
+EventBus
+ ├── ScopeMonitor
+ ├── HealthMonitor
+ ├── NotificationManager
+ ├── AuditLogger
+ ├── Metrics
+ └── RecoveryEngine
+```
+
+This avoids every subsystem directly depending on every other subsystem.
+
+---
+
+# 🏗️ THE BIG ULTRON ARCHITECTURE
+
+Putting everything together:
+
+```text
+                         ┌──────────────┐
+                         │     CLI      │
+                         └──────┬───────┘
+                                ↓
+                         ┌──────────────┐
+                         │ Task Manager │
+                         └──────┬───────┘
+                                ↓
+                         ┌──────────────┐
+                         │ Agent Kernel │
+                         └──────┬───────┘
+                                │
+          ┌─────────────────────┼─────────────────────┐
+          ↓                     ↓                     ↓
+   Context Engine         Model System          Task Planner
+          │                     │
+          │              ┌──────┴──────┐
+          │              ↓             ↓
+          │         Model Router    Model Gateway
+          │
+          ↓
+   Repository Intelligence
+          │
+          ↓
+      Tool Registry
+          │
+          ↓
+      Policy Engine
+          │
+          ↓
+      Tool Executor
+          │
+     ┌────┼──────────┐
+     ↓    ↓          ↓
+    FS  Terminal     Git
+     │    │          │
+     └────┼──────────┘
+          ↓
+     ChangeTracker
+          ↓
+     ScopeMonitor
+          ↓
+     Verification
+          ↓
+   ┌──────┴────────┐
+   ↓               ↓
+Success          Failure
+   ↓               ↓
+Complete       Repair Loop
+                    │
+                    ↓
+                 Retry
+                    │
+                 Failed
+                    ↓
+                 Rollback
+```
+
+And around everything:
+
+```text
+                    EventBus
+                       │
+        ┌──────────────┼───────────────┐
+        ↓              ↓               ↓
+     Audit          Health        Notifications
+        │              │               │
+        │              ↓               ├── Console
+        │        Self-Repair            └── Email
+        │
+        ↓
+    SecretRedactor
+```
+
+---
+
+# 🤖 ULTRON SELF-HEALING LAYER
+
+And specifically for Ultron itself:
+
+```text
+                  ULTRON
+                     │
+                HealthMonitor
+                     │
+              ┌──────┴──────┐
+              │             │
+           HEALTHY       DAMAGED
+                            │
+                            ↓
+                  Recovery Bootstrap
+                            │
+                            ↓
+                   Known-Good Commit
+                            │
+                            ↓
+                    Failure Diagnosis
+                            │
+                            ↓
+                    Repair Workspace
+                            │
+                            ↓
+                     AI Repair Plan
+                            │
+                            ↓
+                       Apply Patch
+                            │
+                            ↓
+                    Recovery Tests
+                            │
+                     ┌──────┴──────┐
+                     ↓             ↓
+                   PASS          FAIL
+                     ↓             ↓
+              Runtime Test      Rollback
+                     │
+                ┌────┴────┐
+                ↓         ↓
+              PASS      FAIL
+                ↓         ↓
+             Promote   Rollback
+```
+
+---
+
+# 📧 ALERT SYSTEM
+
+And our email idea fits into this perfectly:
+
+```text
+                    EventBus
+                       │
+       ┌───────────────┼────────────────┐
+       ↓               ↓                ↓
+ Scope Violation   Self-Repair       Ultron Crash
+       │               │                │
+       └───────────────┼────────────────┘
+                       ↓
+                NotificationManager
+                   /           \
+                  ↓             ↓
+             Terminal          Email
+```
+
+So you'll get notified when something genuinely important happens without being spammed for every normal operation.
+
+---
+
+# 🥇 MY PRIORITY ORDER
+
+Bro, I **wouldn't implement everything at once**.
+
+I'd build Ultron in this order:
+
+## P0 — Foundation & Safety
+
+### 1.
+
+**Single Tool Execution Pipeline**
+
+### 2.
+
+**Fail-Closed PolicyEngine**
+
+### 3.
+
+**Dynamic ScopeManager**
+
+### 4.
+
+**ChangeTracker + ScopeMonitor**
+
+### 5.
+
+**SecretRedactor**
+
+### 6.
+
+**Repository Trust Boundary**
+
+### 7.
+
+**Checkpoint/Rollback**
+
+---
+
+## P1 — Reliability
+
+### 8.
+
+**Verification Engine**
+
+### 9.
+
+**Autonomous Repair Loop**
+
+### 10.
+
+**Retry Budget**
+
+### 11.
+
+**EventBus**
+
+### 12.
+
+**Health Monitor**
+
+---
+
+## P2 — Ultron Intelligence
+
+### 13.
+
+**Model Capability System**
+
+### 14.
+
+**Capability Probe**
+
+### 15.
+
+**Model Router**
+
+### 16.
+
+**Model Health**
+
+### 17.
+
+**Repository Intelligence**
+
+### 18.
+
+**Context Manager**
+
+---
+
+## P3 — Self-Healing
+
+### 19.
+
+**Known-Good Version**
+
+### 20.
+
+**Recovery Bootstrap**
+
+### 21.
+
+**Ultron Self-Repair**
+
+### 22.
+
+**Automatic Rollback**
+
+### 23.
+
+**`ultron doctor`**
+
+---
+
+## P4 — Advanced UX
+
+### 24.
+
+**Dry Run**
+
+### 25.
+
+**Task Replay**
+
+### 26.
+
+**Email Notifications**
+
+### 27.
+
+**Model Management CLI**
+
+### 28.
+
+**Detailed Audit/History**
+
+---
+
+# 🔥 And the final Ultron philosophy
+
+I think this is the most important part of everything we've discussed:
+
+### Ultron shouldn't be:
+
+> **"An LLM that can execute terminal commands."**
+
+It should become:
+
+> **"An intelligent engineering system where the model is one component inside a controlled execution environment."**
+
+The model:
+
+**thinks → plans → requests actions**
+
+Ultron:
+
+**checks → executes → monitors → verifies → repairs → records**
+
+And the safety layer:
+
+**controls what is actually allowed.**
+
+That's the architecture I'd personally build toward for **your Ultron CLI**.
+
+Also, the separate community project we've now renamed **Project Hub** can stay completely separate from Ultron's architecture; I wouldn't mix those two products.

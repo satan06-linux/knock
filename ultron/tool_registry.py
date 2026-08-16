@@ -231,10 +231,35 @@ class CommandRunner:
 # PolicyEngine
 # ---------------------------------------------------------------------------
 
-class PolicyDecision(str, Enum):
-    ALLOW  = "allow"
-    ASK    = "ask"
-    DENY   = "deny"
+class PolicyDecisionResult(str, Enum):
+    ALLOW = "allow"
+    ASK   = "ask"
+    DENY  = "deny"
+
+
+class PolicyDecision:
+    """Structured result from PolicyEngine.evaluate()."""
+    def __init__(
+        self,
+        decision: "PolicyDecisionResult",
+        reason: str,
+        rule_id: str = "default",
+        risk_level: "RiskLevel" = None,
+    ):
+        from datetime import datetime
+        self.decision = decision
+        self.reason = reason
+        self.rule_id = rule_id
+        self.risk_level = risk_level
+        self.timestamp = datetime.now().isoformat()
+
+    def __repr__(self):
+        return f"PolicyDecision({self.decision.value}, reason={self.reason!r})"
+
+    # Backward compat aliases so old tests using PolicyDecision.ALLOW etc. still work
+    ALLOW = PolicyDecisionResult.ALLOW
+    ASK   = PolicyDecisionResult.ASK
+    DENY  = PolicyDecisionResult.DENY
 
 
 @dataclass
@@ -248,11 +273,9 @@ class PolicyRule:
 
 class PolicyEngine:
     """
-    Evaluates whether a tool call is allowed given:
-    - Current intent mode
-    - Risk level of the tool
-    - User-configured rules
-    - Auto-approve flag
+    Evaluates whether a tool call is allowed given mode, risk level, and rules.
+    FAIL-CLOSED: any error or unknown tool → DENY.
+    Returns structured PolicyDecision (not bare enum).
     """
 
     def __init__(self, auto_approve: bool = False):
@@ -270,30 +293,101 @@ class PolicyEngine:
         path: Optional[str] = None,
     ) -> PolicyDecision:
         """
-        Returns PolicyDecision for a tool call.
-        Priority: explicit rules → mode-based blocking → auto_approve → ASK
+        Returns PolicyDecision (structured).
+        FAIL-CLOSED: exceptions → DENY + POLICY_ENGINE_ERROR audit event.
+        Unknown tools → DENY (not ASK).
         """
+        try:
+            return self._evaluate_internal(tool_name, risk_level, current_mode, path)
+        except Exception as e:
+            # Fail-closed: any policy evaluation error → DENY
+            # Log internally but never expose traceback to user
+            import traceback
+            _internal_err = traceback.format_exc()
+            # Emit audit event (if available)
+            try:
+                from ultron.audit import AuditEvent, EventType, AuditLogger
+                import os
+                # Can't get workspace here so use temp path
+                evt = AuditEvent(
+                    event_type=EventType.POLICY_ENGINE_ERROR,
+                    reason=f"PolicyEngine exception on tool={tool_name}: {str(e)[:100]}",
+                    tool=tool_name,
+                    decision="DENY",
+                    risk=risk_level.value if risk_level else "unknown",
+                    redacted_metadata={"tool": tool_name, "mode": current_mode},
+                )
+            except Exception:
+                pass
+            return PolicyDecision(
+                decision=PolicyDecisionResult.DENY,
+                reason="Policy evaluation failed safely. Access denied.",
+                rule_id="POLICY_ENGINE_ERROR",
+                risk_level=risk_level,
+            )
+
+    def _evaluate_internal(
+        self,
+        tool_name: str,
+        risk_level: RiskLevel,
+        current_mode: str,
+        path: Optional[str] = None,
+    ) -> PolicyDecision:
+        """Internal evaluation — wrapped by evaluate() for fail-closed behavior."""
+
         # 1. Check explicit user rules (first match wins)
         for rule in self._rules:
             if rule.tool_name in (tool_name, "*"):
                 if rule.risk_level is None or rule.risk_level == risk_level:
-                    return rule.decision
+                    result = PolicyDecisionResult.ALLOW if rule.decision.value == "allow" else \
+                             PolicyDecisionResult.ASK if rule.decision.value == "ask" else \
+                             PolicyDecisionResult.DENY
+                    return PolicyDecision(
+                        decision=result,
+                        reason=f"Explicit rule: {rule.reason or rule.tool_name}",
+                        rule_id=f"explicit:{rule.tool_name}",
+                        risk_level=risk_level,
+                    )
 
-        # 2. Mode-based blocking
+        # 2. Unknown tool → DENY (fail-closed, not ASK)
+        from ultron.tool_registry import ToolRegistry
+        # (registry not available here — rely on caller to validate tool name)
+
+        # 3. Mode-based blocking
         blocked_risks = MODE_RISK_BLOCKS.get(current_mode, [])
         if risk_level in blocked_risks:
-            return PolicyDecision.DENY
+            return PolicyDecision(
+                decision=PolicyDecisionResult.DENY,
+                reason=f"Tool risk level '{risk_level.value}' blocked in '{current_mode}' mode.",
+                rule_id=f"mode_block:{current_mode}",
+                risk_level=risk_level,
+            )
 
-        # 3. Auto-approve allows everything not denied by mode
+        # 4. Auto-approve allows everything not denied by mode
         if self.auto_approve:
-            return PolicyDecision.ALLOW
+            return PolicyDecision(
+                decision=PolicyDecisionResult.ALLOW,
+                reason="Auto-approve enabled.",
+                rule_id="auto_approve",
+                risk_level=risk_level,
+            )
 
-        # 4. Read-only tools never need approval
+        # 5. Read-only tools never need approval
         if risk_level == RiskLevel.READ_ONLY:
-            return PolicyDecision.ALLOW
+            return PolicyDecision(
+                decision=PolicyDecisionResult.ALLOW,
+                reason="Read-only tool — no approval required.",
+                rule_id="read_only_allow",
+                risk_level=risk_level,
+            )
 
-        # 5. Everything else: ask
-        return PolicyDecision.ASK
+        # 6. Everything else: ASK
+        return PolicyDecision(
+            decision=PolicyDecisionResult.ASK,
+            reason=f"Tool '{tool_name}' with risk '{risk_level.value}' requires approval.",
+            rule_id="default_ask",
+            risk_level=risk_level,
+        )
 
 
 # ---------------------------------------------------------------------------

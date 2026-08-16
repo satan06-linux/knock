@@ -14,6 +14,7 @@ setup(
         "console_scripts": [
             "ultron=ultron.cli:main",
             "ultron-ci=ultron.headless:headless_cli_main",
+            "ultron-recover=ultron.recovery_bootstrap:cli_main",
         ],
     },
     author="Ultron AI Team",

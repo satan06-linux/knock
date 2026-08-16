@@ -79,25 +79,54 @@ class MetricsCollector:
             return []
 
     def compute_summary(self) -> Dict[str, Any]:
-        """Compute aggregate metrics from session data."""
-        if not self.session_metrics:
+        """Compute aggregate metrics from session + historical data."""
+        all_metrics = list(self.session_metrics) + self._load_all_historical()
+
+        if not all_metrics:
             return {}
 
-        total = len(self.session_metrics)
-        succeeded = sum(1 for m in self.session_metrics if m.success)
-        avg_tools = sum(m.tool_call_count for m in self.session_metrics) / total
-        avg_duration = sum(m.duration_seconds for m in self.session_metrics) / total
-        unverified_rate = sum(1 for m in self.session_metrics if m.had_unverified) / total
+        total = len(all_metrics)
+        succeeded = sum(
+            1 for m in all_metrics
+            if (m.get("success", False) if isinstance(m, dict) else m.success)
+        )
+
+        def _get(m, key, default=0):
+            return m.get(key, default) if isinstance(m, dict) else getattr(m, key, default)
+
+        tool_counts = [_get(m, "tool_call_count", 0) for m in all_metrics]
+        durations = [_get(m, "duration_seconds", 0) for m in all_metrics]
+        unverified = sum(1 for m in all_metrics if _get(m, "had_unverified", False))
+        unsafe = sum(_get(m, "unsafe_actions", 0) for m in all_metrics)
+        approval = sum(_get(m, "approval_prompts", 0) for m in all_metrics)
+        overflows = sum(_get(m, "context_overflows", 0) for m in all_metrics)
 
         return {
             "total_tasks": total,
-            "task_completion_rate": succeeded / total,
-            "avg_tool_calls_per_task": round(avg_tools, 1),
-            "avg_duration_seconds": round(avg_duration, 1),
-            "unverified_claim_rate": round(unverified_rate, 3),
-            "total_unsafe_actions": sum(m.unsafe_actions for m in self.session_metrics),
-            "total_approval_prompts": sum(m.approval_prompts for m in self.session_metrics),
+            "task_completion_rate": round(succeeded / total, 3),
+            "avg_tool_calls_per_task": round(sum(tool_counts) / max(total, 1), 1),
+            "avg_duration_seconds": round(sum(durations) / max(total, 1), 1),
+            "unverified_claim_rate": round(unverified / max(total, 1), 3),
+            "total_unsafe_actions": unsafe,
+            "total_approval_prompts": approval,
+            "context_overflow_rate": round(overflows / max(total, 1), 3),
+            "approval_friction": round(approval / max(succeeded, 1), 2),
         }
+
+    def _load_all_historical(self) -> list:
+        """Load all historical metrics from disk."""
+        entries = []
+        try:
+            for fname in os.listdir(self.store_dir):
+                if fname.endswith(".json"):
+                    try:
+                        with open(os.path.join(self.store_dir, fname), "r") as f:
+                            entries.append(json.load(f))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return entries
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +281,31 @@ class FixtureWorkspace:
             "packages/worker/setup.py": 'from setuptools import setup\nsetup(name="worker")\n',
             "packages/worker/worker.py": "def run(): pass\n",
             "packages/worker/tests/test_worker.py": "def test_run(): pass\n",
+        },
+        "go_basic": {
+            "go.mod": "module example.com/app\n\ngo 1.21\n",
+            "main.go": (
+                'package main\n\nimport "fmt"\n\n'
+                'func add(a, b int) int { return a + b }\n\n'
+                'func main() { fmt.Println(add(1, 2)) }\n'
+            ),
+            "main_test.go": (
+                'package main\n\nimport "testing"\n\n'
+                'func TestAdd(t *testing.T) {\n'
+                '    if add(1, 2) != 3 { t.Fatal("expected 3") }\n'
+                '}\n'
+            ),
+        },
+        "rust_basic": {
+            "Cargo.toml": (
+                '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n'
+            ),
+            "src/lib.rs": (
+                "pub fn add(a: i32, b: i32) -> i32 { a + b }\n\n"
+                "#[cfg(test)]\nmod tests {\n    use super::*;\n\n"
+                "    #[test]\n    fn test_add() {\n        assert_eq!(add(1, 2), 3);\n    }\n}\n"
+            ),
+            "src/main.rs": 'fn main() { println!("{}", app::add(1, 2)); }\n',
         },
     }
 

@@ -37,16 +37,48 @@ jobs:
           pip install keyring keyrings.alt
           pip install -e .
 
-      - name: Run tests (excluding live Ollama tests)
+      - name: Run unit + integration tests (excluding live Ollama tests)
         run: |
           python -m pytest tests/ -v --tb=short \
             --ignore=tests/live_integration_test.py \
             --junitxml=test-results.xml
+
+      - name: Run eval harness (P5.3 regression gate)
+        run: |
+          python scripts/run_eval.py --output eval-results.json
+        continue-on-error: true
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results-${{ matrix.python-version }}
-          path: test-results.xml
+          path: |
+            test-results.xml
+            eval-results.json
           retention-days: 30
+
+      - name: Comment eval results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let evalSummary = 'Eval harness results not available.';
+            try {
+              const data = JSON.parse(fs.readFileSync('eval-results.json', 'utf8'));
+              const passed = data.filter(r => r.passed).length;
+              const total = data.length;
+              const lines = data.map(r =>
+                `| ${r.scenario} | ${r.name} | ${r.passed ? '✅ PASS' : '❌ FAIL'} | ${r.detail} |`
+              ).join('\n');
+              evalSummary = `## Eval Harness: ${passed}/${total} scenarios passed\n\n| # | Scenario | Result | Detail |\n|---|---|---|---|\n${lines}`;
+            } catch(e) {
+              evalSummary = `Eval harness: could not parse results (${e.message})`;
+            }
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: evalSummary
+            });

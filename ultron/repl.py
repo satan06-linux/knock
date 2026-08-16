@@ -57,6 +57,10 @@ class UltronCompleter(Completer):
             "/metrics",
             # Session + Plugins
             "/session-log", "/plugins", "/context-status",
+            # P1/P2
+            "/probe", "/route-info",
+            # P3/P4
+            "/self-repair", "/known-good", "/replay", "/notify-config", "/audit",
         ]
 
     def get_completions(self, document, complete_event):
@@ -181,7 +185,15 @@ class UltronREPL:
         table.add_row("[cyan]/metrics[/cyan]", "Show task completion rate and session metrics")
         table.add_row("[cyan]/session-log [days][/cyan]", "Show detailed session activity log")
         table.add_row("[cyan]/plugins[/cyan]", "List loaded plugins from ~/.ultron/plugins/")
-        table.add_row("[cyan]/context-status[/cyan]", "Show context window usage vs provider limit")        
+        table.add_row("[cyan]/context-status[/cyan]", "Show context window usage vs provider limit")
+        table.add_row("[bold white]── P1/P2/P3/P4 ──[/bold white]", "")
+        table.add_row("[cyan]/probe[/cyan]", "Probe active model capabilities empirically")
+        table.add_row("[cyan]/route-info [intent][/cyan]", "Show model routing rationale")
+        table.add_row("[cyan]/self-repair[/cyan]", "Detect damage and run Ultron self-repair loop")
+        table.add_row("[cyan]/known-good [record][/cyan]", "Show or record the known-good version")
+        table.add_row("[cyan]/replay [id|list][/cyan]", "View task execution replay timeline")
+        table.add_row("[cyan]/notify-config <email> <smtp>[/cyan]", "Configure email notifications")
+        table.add_row("[cyan]/audit [days][/cyan]", "View audit event log with security summary")
         self.console.print(Panel(
             table,
             title="[bold magenta]Ultron CLI Commands[/bold magenta]",
@@ -759,6 +771,27 @@ class UltronREPL:
 
         elif cmd == "/context-status":
             self._cmd_context_status()
+
+        elif cmd == "/probe":
+            self._cmd_probe()
+
+        elif cmd == "/route-info":
+            self._cmd_route_info(arg)
+
+        elif cmd == "/self-repair":
+            self._cmd_self_repair()
+
+        elif cmd == "/known-good":
+            self._cmd_known_good(arg)
+
+        elif cmd == "/replay":
+            self._cmd_replay(arg)
+
+        elif cmd == "/notify-config":
+            self._cmd_notify_config(arg)
+
+        elif cmd == "/audit":
+            self._cmd_audit(arg)
 
         else:
             self.console.print(f"[red]Unknown command: {cmd}. Type /help for assistance.[/red]")
@@ -1658,14 +1691,55 @@ class UltronREPL:
         self.console.print(f"[green]* Saved to: {path}[/green]")
 
     def _cmd_doctor(self):
-        """Run environment diagnostics."""
-        doctor = EnvironmentDoctor(self.agent.workspace_root)
-        checks = doctor.run()
-        self.console.print("[bold white]Environment Diagnostics:[/bold white]\n")
+        """Run environment diagnostics using HealthMonitor."""
+        from ultron.health_monitor import HealthMonitor
+        monitor = HealthMonitor(self.agent.workspace_root, self.agent)
+        checks = monitor.check_all()
+        overall = monitor.overall_status(checks)
+
+        color_map = {"ok": "green", "warn": "yellow", "degraded": "red", "error": "red"}
+        icon_map  = {"ok": "✓", "warn": "⚠", "degraded": "✗", "error": "✗"}
+
+        self.console.print(f"\n[bold white]Environment Diagnostics:[/bold white]  Overall: [{color_map.get(overall.lower(), 'white')}]{overall}[/{color_map.get(overall.lower(), 'white')}]\n")
         for c in checks:
-            color = {"ok": "green", "warn": "yellow", "error": "red", "info": "cyan"}.get(c["status"], "white")
-            icon = {"ok": "✓", "warn": "⚠", "error": "✗", "info": "i"}.get(c["status"], "•")
-            self.console.print(f"  [{color}]{icon}[/{color}] [bold]{c['check']}[/bold]: {c['detail']}")
+            color = color_map.get(c.status, "white")
+            icon  = icon_map.get(c.status, "•")
+            self.console.print(f"  [{color}]{icon}[/{color}] [bold]{c.component}[/bold]: {c.detail}")
+
+    def _cmd_probe(self):
+        """Probe active model capabilities and update its profile."""
+        from ultron.capability_probe import CapabilityProbe
+        if not self.agent.model.is_available():
+            self.console.print("[red]Model not available. Cannot probe.[/red]")
+            return
+        self.console.print(f"[cyan]Probing {self.agent.model.model_name}...[/cyan]")
+        probe = CapabilityProbe(self.agent.model, self.console)
+        results = probe.probe_all()
+        profile = probe.update_profile(results)
+
+        from rich.table import Table as RT
+        table = RT(show_header=True, header_style="bold white")
+        table.add_column("Capability", style="cyan")
+        table.add_column("Result", width=8)
+        table.add_column("Reliability", width=12)
+        table.add_column("Latency", width=10)
+        for cap, r in results.items():
+            icon = "[green]✓[/green]" if r.passed else "[red]✗[/red]"
+            table.add_row(cap, icon, f"{r.reliability:.0%}", f"{r.latency:.2f}s")
+        self.console.print(table)
+        self.console.print(f"[green]* Profile saved for {profile.provider}/{profile.model}[/green]")
+
+    def _cmd_route_info(self, arg: str):
+        """Show routing rationale for a given intent."""
+        from ultron.model_router import ModelRouter
+        router = ModelRouter()
+        intent = arg.strip() or (self.agent.current_task.intent.value if self.agent.current_task else "unknown")
+        info = router.describe_routing(intent)
+        self.console.print(Panel(
+            "\n".join(f"[bold white]{k}:[/bold white] {v}" for k, v in info.items()),
+            title=f"[bold cyan]Routing: {intent}[/bold cyan]",
+            border_style="cyan", expand=False
+        ))
 
     def _cmd_health(self):
         """Run health analysis on the workspace."""
@@ -1946,36 +2020,44 @@ class UltronREPL:
         self.console.print(f"\n[{color}]{icon} {result['variation']} — {result['recommendation']}[/{color}]")
 
     def _cmd_metrics(self):
-        """Show task metrics summary for this workspace."""
+        """Show comprehensive task metrics dashboard (session + historical)."""
         from ultron.eval_suite import MetricsCollector
         collector = MetricsCollector(self.agent.workspace_root)
+        # Merge session metrics into collector for full picture
+        for m in self.agent.metrics_collector.session_metrics:
+            collector.session_metrics.append(m)
+
+        summary = collector.compute_summary()
         history = collector.load_history(50)
 
-        if not history:
+        if not summary and not history:
             self.console.print("[yellow]No task metrics recorded yet. Run some tasks first.[/yellow]")
             return
 
-        summary = collector.compute_summary()
-        recent = history[:10]
+        def pct(v): return f"{v*100:.0f}%" if v is not None else "n/a"
 
         body = (
-            f"[bold white]Total tasks:[/bold white]       {summary.get('total_tasks', 0)}\n"
-            f"[bold white]Completion rate:[/bold white]   {summary.get('task_completion_rate', 0)*100:.0f}%\n"
-            f"[bold white]Avg tool calls:[/bold white]    {summary.get('avg_tool_calls_per_task', 0)}\n"
-            f"[bold white]Avg duration:[/bold white]      {summary.get('avg_duration_seconds', 0):.1f}s\n"
-            f"[bold white]Unverified rate:[/bold white]   {summary.get('unverified_claim_rate', 0)*100:.0f}%\n"
-            f"[bold white]Unsafe actions:[/bold white]    {summary.get('total_unsafe_actions', 0)}\n"
+            f"[bold white]Total tasks:[/bold white]           {summary.get('total_tasks', 0)}\n"
+            f"[bold white]Completion rate:[/bold white]       {pct(summary.get('task_completion_rate'))}\n"
+            f"[bold white]Avg tool calls:[/bold white]        {summary.get('avg_tool_calls_per_task', 0)}\n"
+            f"[bold white]Avg duration:[/bold white]          {summary.get('avg_duration_seconds', 0):.1f}s\n"
+            f"[bold white]Unverified rate:[/bold white]       {pct(summary.get('unverified_claim_rate'))}\n"
+            f"[bold white]Unsafe actions:[/bold white]        {summary.get('total_unsafe_actions', 0)}\n"
+            f"[bold white]Approval friction:[/bold white]     {summary.get('approval_friction', 0):.1f} approvals/task\n"
+            f"[bold white]Context overflow rate:[/bold white] {pct(summary.get('context_overflow_rate'))}\n"
         )
 
         body += "\n[bold white]Recent tasks:[/bold white]\n"
-        for m in recent:
+        for m in (history or [])[-10:]:
             status = "[green]✓[/green]" if m.get("success") else "[red]✗[/red]"
             ts = m.get("timestamp", "")[:16]
-            body += f"  {status} [{m.get('intent','?')}] {m.get('prompt','')[:60]}  [dim]{ts}[/dim]\n"
+            intent = m.get("intent", "?")
+            prompt = m.get("prompt", "")[:55]
+            body += f"  {status} [{intent}] {prompt}  [dim]{ts}[/dim]\n"
 
         self.console.print(Panel(
             body.strip(),
-            title="[bold cyan]Task Metrics[/bold cyan]",
+            title="[bold cyan]Task Metrics Dashboard[/bold cyan]",
             border_style="cyan", expand=False
         ))
 
@@ -2062,6 +2144,125 @@ class UltronREPL:
             self.console.print(Panel(body, title="[bold cyan]Context Status[/bold cyan]", border_style="cyan", expand=False))
         except Exception as e:
             self.console.print(f"[red]Error checking context: {e}[/red]")
+
+    def _cmd_self_repair(self):
+        """Run Ultron self-repair loop."""
+        from ultron.recovery_bootstrap import detect_damage
+        from ultron.self_repair import SelfRepairEngine
+        self.console.print("[cyan]Checking for damage...[/cyan]")
+        damage = detect_damage(self.agent.workspace_root)
+        if not damage:
+            self.console.print("[bold green]✓ No damage detected. Ultron is healthy.[/bold green]")
+            return
+        self.console.print(f"[bold red]{len(damage)} issue(s) detected:[/bold red]")
+        for d in damage:
+            self.console.print(f"  [red]- {d}[/red]")
+        if not Confirm.ask("[bold yellow]Attempt self-repair?[/bold yellow]"):
+            return
+        engine = SelfRepairEngine(self.agent.workspace_root, self.agent.model, self.console)
+        result = engine.run(damage)
+        if result["final_status"] == "recovered":
+            self.console.print("[bold green]✓ Self-repair successful.[/bold green]")
+        else:
+            self.console.print(f"[bold red]Self-repair failed. Rolled back: {result.get('rolled_back')}[/bold red]")
+
+    def _cmd_known_good(self, arg: str):
+        """Record or show the known-good version."""
+        from ultron.known_good import get_known_good, record_known_good_from_current, is_current_known_good
+        if arg.strip() == "record":
+            msg = record_known_good_from_current(self.agent.workspace_root)
+            self.console.print(f"[green]* {msg}[/green]")
+        else:
+            known = get_known_good()
+            if not known:
+                self.console.print("[yellow]No known-good record. Run: /known-good record[/yellow]")
+                return
+            current = is_current_known_good(self.agent.workspace_root)
+            status = "[green]✓ current[/green]" if current else "[yellow]⚠ differs from current HEAD[/yellow]"
+            self.console.print(Panel(
+                f"[bold white]Commit:[/bold white] {known.get('commit','?')[:16]}\n"
+                f"[bold white]Recorded:[/bold white] {known.get('timestamp','?')[:19]}\n"
+                f"[bold white]Tests passed:[/bold white] {known.get('tests_passed',0)}\n"
+                f"[bold white]Status:[/bold white] {status}",
+                title="[bold cyan]Known-Good Version[/bold cyan]",
+                border_style="cyan", expand=False,
+            ))
+
+    def _cmd_replay(self, arg: str):
+        """View task replay timeline. /replay [task_id|list]"""
+        from ultron.task_replay import TaskReplay
+        replay = TaskReplay(self.agent.workspace_root)
+        if not arg or arg == "list":
+            records = replay.list_recent(10)
+            if not records:
+                self.console.print("[yellow]No replay records found.[/yellow]")
+                return
+            self.console.print("[bold white]Recent task replays:[/bold white]")
+            for r in records:
+                status_color = "green" if r.get("final_status") == "verified" else "yellow"
+                self.console.print(
+                    f"  [cyan]{r['task_id']}[/cyan]  [{status_color}]{r.get('final_status','?')}[/{status_color}]"
+                    f"  {r.get('intent','?')}  {r.get('started_at','?')[:16]}"
+                    f"  [dim]{r.get('prompt','')[:50]}[/dim]"
+                )
+            self.console.print("[dim]Use /replay <task_id> to see full timeline.[/dim]")
+        else:
+            record = replay.load(arg.strip())
+            if not record:
+                self.console.print(f"[red]No replay found for task ID: {arg}[/red]")
+                return
+            timeline = replay.format_timeline(record)
+            self.console.print(Panel(timeline, title=f"[bold cyan]Replay: {arg}[/bold cyan]",
+                                     border_style="cyan", expand=False))
+
+    def _cmd_notify_config(self, arg: str):
+        """Configure email notifications. /notify-config <email> <smtp_host> [port]"""
+        from ultron.notifications import NotificationManager
+        parts = arg.split() if arg else []
+        if len(parts) < 2:
+            self.console.print("[red]Usage: /notify-config <email> <smtp_host> [port][/red]")
+            self.console.print("[dim]Example: /notify-config you@example.com smtp.gmail.com 587[/dim]")
+            return
+        email, smtp_host = parts[0], parts[1]
+        port = int(parts[2]) if len(parts) > 2 else 587
+        NotificationManager.configure_email(email, smtp_host, smtp_port=port)
+        self.console.print(f"[green]* Notifications configured → {email} via {smtp_host}:{port}[/green]")
+        self.console.print("[dim]Note: SMTP password stored in ~/.ultron/settings.json (not in git)[/dim]")
+
+    def _cmd_audit(self, arg: str):
+        """Show audit event log. /audit [days]"""
+        from ultron.audit import AuditLogger
+        days = int(arg) if arg and arg.isdigit() else 1
+        logger = AuditLogger(self.agent.workspace_root)
+        entries = logger.load_recent(days) if days > 1 else logger.load_today()
+
+        if not entries:
+            self.console.print("[yellow]No audit entries found.[/yellow]")
+            return
+
+        # Group by event type for summary
+        from collections import Counter
+        counts = Counter(e.get("event_type", "?") for e in entries)
+        summary = "\n".join(f"  {k}: {v}" for k, v in sorted(counts.items(), key=lambda x: -x[1])[:10])
+
+        self.console.print(Panel(
+            f"[bold white]Total events:[/bold white] {len(entries)}\n\n"
+            f"[bold white]By type:[/bold white]\n{summary}",
+            title=f"[bold cyan]Audit Log ({days} day(s))[/bold cyan]",
+            border_style="cyan", expand=False,
+        ))
+
+        # Show last 10 notable events (denies, violations, errors)
+        notable = [e for e in entries if any(
+            kw in e.get("event_type", "") for kw in ["DENIED", "VIOLATION", "ERROR", "BLOCKED", "SECRET"]
+        )]
+        if notable:
+            self.console.print(f"\n[bold yellow]Notable events ({len(notable)}):[/bold yellow]")
+            for e in notable[-10:]:
+                ts = e.get("timestamp", "")[:19]
+                et = e.get("event_type", "?")
+                reason = e.get("reason", "")[:60]
+                self.console.print(f"  [dim]{ts}[/dim]  [red]{et}[/red]: {reason}")
 
     def start(self):
         """Starts the interactive prompt loop."""

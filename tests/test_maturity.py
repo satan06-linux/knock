@@ -241,39 +241,39 @@ class TestPolicyEngine(unittest.TestCase):
     def test_allow_read_only_always(self):
         engine = PolicyEngine(auto_approve=False)
         decision = engine.evaluate("view_file", RiskLevel.READ_ONLY, "build")
-        self.assertEqual(decision, PolicyDecision.ALLOW)
+        self.assertEqual(decision.decision, PolicyDecision.ALLOW)
 
     def test_deny_write_in_ask_mode(self):
         engine = PolicyEngine(auto_approve=False)
         decision = engine.evaluate("write_file", RiskLevel.WORKSPACE_WRITE, "ask")
-        self.assertEqual(decision, PolicyDecision.DENY)
+        self.assertEqual(decision.decision, PolicyDecision.DENY)
 
     def test_deny_write_in_plan_mode(self):
         engine = PolicyEngine(auto_approve=False)
         decision = engine.evaluate("write_file", RiskLevel.WORKSPACE_WRITE, "plan")
-        self.assertEqual(decision, PolicyDecision.DENY)
+        self.assertEqual(decision.decision, PolicyDecision.DENY)
 
     def test_allow_write_in_build_mode_with_auto_approve(self):
         engine = PolicyEngine(auto_approve=True)
         decision = engine.evaluate("write_file", RiskLevel.WORKSPACE_WRITE, "build")
-        self.assertEqual(decision, PolicyDecision.ALLOW)
+        self.assertEqual(decision.decision, PolicyDecision.ALLOW)
 
     def test_ask_write_in_build_mode_no_auto(self):
         engine = PolicyEngine(auto_approve=False)
         decision = engine.evaluate("write_file", RiskLevel.WORKSPACE_WRITE, "build")
-        self.assertEqual(decision, PolicyDecision.ASK)
+        self.assertEqual(decision.decision, PolicyDecision.ASK)
 
     def test_deny_git_commit_in_review_mode(self):
         engine = PolicyEngine(auto_approve=True)
         decision = engine.evaluate("git_commit", RiskLevel.GIT_WRITE, "review")
-        self.assertEqual(decision, PolicyDecision.DENY)
+        self.assertEqual(decision.decision, PolicyDecision.DENY)
 
     def test_explicit_rule_overrides_mode(self):
         from ultron.tool_registry import PolicyRule
         engine = PolicyEngine(auto_approve=False)
         engine.add_rule(PolicyRule(tool_name="write_file", risk_level=None, decision=PolicyDecision.ALLOW, reason="test"))
         decision = engine.evaluate("write_file", RiskLevel.WORKSPACE_WRITE, "ask")
-        self.assertEqual(decision, PolicyDecision.ALLOW)
+        self.assertEqual(decision.decision, PolicyDecision.ALLOW)
 
     def test_mode_blocks_dict_completeness(self):
         for mode in ["ask", "plan", "review", "build", "fix"]:

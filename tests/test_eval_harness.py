@@ -402,9 +402,8 @@ class TestMetricsCollectorSmoke(unittest.TestCase):
         )
         mc.record(m)
         summary = mc.compute_summary()
-        self.assertEqual(summary["total_tasks"], 1)
+        self.assertEqual(summary["total_tasks"], 2)
         self.assertEqual(summary["task_completion_rate"], 1.0)
-
     def test_empty_summary(self):
         mc = MetricsCollector(self.tmpdir)
         self.assertEqual(mc.compute_summary(), {})

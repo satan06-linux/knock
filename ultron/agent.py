@@ -26,6 +26,12 @@ from ultron.change_tracker import ChangeTracker
 from ultron.eval_suite import MetricsCollector, TaskMetrics
 from ultron.git_workflow import DecisionLog
 from ultron.session_log import SessionLogger
+from ultron.event_bus import get_bus, BusEvent
+from ultron.health_monitor import HealthMonitor
+from ultron.model_router import ModelRouter, get_health_tracker
+from ultron.project_profile import ProjectProfile
+from ultron.task_replay import TaskReplay
+from ultron.notifications import NotificationManager
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +267,35 @@ class UltronAgent:
         self.memory_manager = ProjectMemoryManager(workspace_root)
         self.project_memory = self.memory_manager.load_memory()
         self.repo_map = RepoMap(workspace_root)
+
+        # P0.1: Single tool execution pipeline (after repo_map is ready)
+        from ultron.tool_executor import ToolExecutor
+        from ultron.scope_manager import ScopeManager
+        from ultron.audit import AuditLogger
+        self.scope_manager = ScopeManager(workspace_root, self.repo_map)
+        self.audit_logger = AuditLogger(workspace_root)
+        self.tool_executor = ToolExecutor(
+            workspace_root=workspace_root,
+            tool_registry=self.tool_registry,
+            policy_engine=self.policy_engine,
+            scope_manager=self.scope_manager,
+            audit_logger=self.audit_logger,
+            tools=self.tools,
+            checkpoint_manager=self.checkpoint,
+            change_tracker=self.change_tracker,
+            console=self.console,
+        )
+
+        # P1/P2: EventBus, ModelRouter, ProjectProfile, HealthMonitor
+        self.bus = get_bus()
+        self.model_router = ModelRouter()
+        self.project_profile = ProjectProfile(workspace_root, self.repo_map, self.project_memory)
+        self.health_tracker = get_health_tracker()
+
+        # P3/P4: Task replay, notifications
+        self.task_replay = TaskReplay(workspace_root)
+        self.notification_manager = NotificationManager(self.console)
+        self._current_replay: object = None
         
         self.last_plan_task = None
         self.task_commands = []
@@ -588,6 +623,22 @@ class UltronAgent:
             self.current_task.intent.value,
             user_prompt,
         )
+        # Update ToolExecutor with current task/transaction IDs
+        self.tool_executor.task_id = self.current_task.id
+        self.tool_executor.transaction_id = self.checkpoint._transaction_id
+        self.scope_manager.set_initial_scope(
+            self.current_task.expected_files or [],
+            task_id=self.current_task.id,
+        )
+
+        # P4: Start task replay recording
+        self._current_replay = self.task_replay.start_recording(
+            task_id=self.current_task.id,
+            prompt=user_prompt,
+            intent=self.current_task.intent.value,
+            model=getattr(self.model, "model_name", "unknown"),
+            provider=getattr(self.model, "provider_name", "Ollama"),
+        )
 
         # Auto-inject conventions for FEATURE/REFACTOR tasks
         self._convention_context = ""
@@ -754,6 +805,11 @@ class UltronAgent:
                         
             except Exception as e:
                 self.console.print(f"\n[red]Error connecting to Ollama: {str(e)}[/red]")
+                # P1: Track provider health
+                pname = getattr(self.model, "provider_name", "unknown")
+                mname = getattr(self.model, "model_name", "unknown")
+                self.health_tracker.record_call(pname, mname, 0.0, timed_out=True)
+                self.bus.publish(BusEvent.MODEL_ERROR, {"provider": pname, "model": mname, "error": str(e)})
                 break
                 
             # If Ollama sent tool calls (or we parsed fallback ones), execute them
@@ -852,6 +908,15 @@ class UltronAgent:
                 self.current_task.status.value,
                 changed_files,
                 self.current_task.elapsed(),
+            )
+
+        # P4: Finalize task replay
+        if self._current_replay and self.current_task:
+            self.task_replay.finalize(
+                self._current_replay,
+                status=self.current_task.status.value,
+                files_changed=changed_files,
+                evidence=[str(e) for e in self._task_evidence],
             )
         if changed_files or self.task_commands:
             try:
