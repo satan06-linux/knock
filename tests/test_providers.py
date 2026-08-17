@@ -346,11 +346,15 @@ class TestProviderRegistry(unittest.TestCase):
         self.assertEqual(p.provider_name, "Ollama")
 
     def test_build_provider_needs_key_returns_none(self):
-        # No key stored for test_provider_xyz
-        p = _build_provider("groq", "llama-3.3-70b-versatile")
-        # Returns None if no key, or GroqProvider if key happens to exist
-        if p is not None:
-            self.assertEqual(p.provider_name, "Groq")
+        # No key stored for test_provider_xyz without override
+        with patch("ultron.providers.registry.get_key", return_value=None):
+            p = _build_provider("groq", "llama-3.3-70b-versatile")
+            self.assertIsNone(p)
+
+    def test_build_provider_api_key_override(self):
+        p = _build_provider("groq", "llama-3.3-70b-versatile", api_key_override="gsk_test123")
+        self.assertIsNotNone(p)
+        self.assertEqual(p.provider_name, "Groq")
 
     def test_build_openai_compat_no_key(self):
         p = _build_provider("openai_compat", "phi3", "http://localhost:1234/v1")

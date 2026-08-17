@@ -75,9 +75,9 @@ PROVIDER_CATALOG = [
 ]
 
 
-def _build_provider(provider_id: str, model_name: str, base_url: str = "") -> Optional[ModelProvider]:
+def _build_provider(provider_id: str, model_name: str, base_url: str = "", api_key_override: Optional[str] = None) -> Optional[ModelProvider]:
     """Instantiate provider by ID."""
-    key = get_key(provider_id) if provider_id != "ollama" else None
+    key = api_key_override or (get_key(provider_id) if provider_id != "ollama" else None)
 
     if provider_id == "ollama":
         from ultron.providers.ollama import OllamaProvider
@@ -116,7 +116,7 @@ def _build_provider(provider_id: str, model_name: str, base_url: str = "") -> Op
 
     elif provider_id == "openai_compat":
         from ultron.providers.openai_compat import OpenAICompatProvider
-        api_key = get_key("openai_compat") or "local"
+        api_key = api_key_override or get_key("openai_compat") or "local"
         return OpenAICompatProvider(base_url=base_url, model_name=model_name, api_key=api_key)
 
     return None
@@ -308,7 +308,7 @@ class ProviderRegistry:
 
                 # Test key
                 console.print("[cyan]Testing key...[/cyan]")
-                tmp = _build_provider(pid, selected_provider["default_model"], base_url)
+                tmp = _build_provider(pid, selected_provider["default_model"], base_url, api_key_override=api_key)
                 if tmp and tmp.health_check():
                     store_key(pid, api_key)
                     console.print(f"[green]✓ Connected. Key saved securely to OS keyring.[/green]")
