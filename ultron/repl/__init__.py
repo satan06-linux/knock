@@ -1,5 +1,5 @@
 """
-repl.py - Backward-compatible facade for ultron.repl package.
+ultron/repl - REPL Subpackage Facade & Exports.
 """
 from ultron.repl.core import UltronREPL, UltronCompleter, main
 
