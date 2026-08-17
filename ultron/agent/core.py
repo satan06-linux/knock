@@ -490,6 +490,23 @@ class UltronAgent:
     def _handle_clarification_gate(self, response_message: Dict[str, Any]) -> Optional[str]:
         """
         Structured clarification gate (Phase 3).
+        """
+        if response_message.get("needs_clarification"):
+            q = response_message.get("question", "Clarification needed.")
+            if "tool_calls" in response_message:
+                del response_message["tool_calls"]
+            return q
+
+        content = response_message.get("content", "").strip()
+        if content and not response_message.get("tool_calls"):
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+            if lines and lines[-1].endswith("?"):
+                return lines[-1]
+        return None
+
+    def _handle_clarification_gate(self, response_message: Dict[str, Any]) -> Optional[str]:
+        """
+        Structured clarification gate (Phase 3).
 
         If the model's response contains needs_clarification=True:
           - Always pause and show the question.

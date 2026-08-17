@@ -7,6 +7,16 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Generator
 
 
+@dataclass(frozen=True)
+class ModelCapabilities:
+    tool_calling: bool = True
+    vision: bool = False
+    streaming: bool = True
+    structured_output: bool = True
+    context_window: Optional[int] = 128000
+    max_output_tokens: Optional[int] = 4096
+
+
 @dataclass
 class ProviderCapabilities:
     context_window: int = 4096
@@ -82,6 +92,19 @@ class ModelProvider(ABC):
     @abstractmethod
     def capabilities(self) -> ProviderCapabilities:
         """Return capability metadata for the active model."""
+
+    def get_capabilities(self, model_name: Optional[str] = None) -> ModelCapabilities:
+        """Return normalized ModelCapabilities for specified or active model."""
+        target_name = model_name or self.model_name
+        caps = self.capabilities()
+        return ModelCapabilities(
+            tool_calling=caps.native_tools,
+            vision=caps.vision,
+            streaming=caps.streaming,
+            structured_output=True,
+            context_window=caps.context_window,
+            max_output_tokens=caps.max_output_tokens,
+        )
 
     def get_model_info(self, model_name: Optional[str] = None) -> ModelInfo:
         """Return rich ModelInfo metadata for specified or active model."""

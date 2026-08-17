@@ -2,6 +2,9 @@
 repl.py - Backward-compatible facade for ultron.repl package.
 """
 from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
+from ultron.agent import UltronAgent
+from ultron.onboard import ProjectMemoryManager
 from ultron.repl.core import UltronREPL, UltronCompleter, main
 
 _REPL_MUTATION_COMMANDS = {
@@ -12,4 +15,13 @@ _REPL_MUTATION_COMMANDS = {
     "/fix":    "run_command",
 }
 
-__all__ = ["UltronREPL", "UltronCompleter", "main", "PromptSession", "_REPL_MUTATION_COMMANDS"]
+__all__ = [
+    "UltronREPL",
+    "UltronCompleter",
+    "main",
+    "PromptSession",
+    "FileHistory",
+    "UltronAgent",
+    "ProjectMemoryManager",
+    "_REPL_MUTATION_COMMANDS",
+]

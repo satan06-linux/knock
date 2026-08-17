@@ -181,13 +181,20 @@ class ProviderRegistry:
         self._fallback = provider
         self._fallback_provider_id = provider_id
 
-    def get_working_provider(self) -> Optional[ModelProvider]:
-        """Return active provider if healthy, else fallback, else None."""
-        if self._active and self._active.health_check():
-            return self._active
-        if self._fallback and self._fallback.health_check():
-            return self._fallback
-        return None
+    def list_models(self, provider_id: Optional[str] = None) -> List[str]:
+        """List model names for specified provider ID or active provider."""
+        if provider_id and provider_id != self._active_provider_id:
+            prov = _build_provider(provider_id, "default")
+            return prov.list_models() if prov else []
+        return self._active.list_models() if self._active else []
+
+    def get_capabilities(self, provider_id: Optional[str] = None, model_name: Optional[str] = None) -> Any:
+        """Get normalized ModelCapabilities for specified provider and model via ProviderRegistry."""
+        from ultron.providers.base import ModelCapabilities
+        if provider_id and provider_id != self._active_provider_id:
+            prov = _build_provider(provider_id, model_name or "default")
+            return prov.get_capabilities(model_name) if prov else ModelCapabilities()
+        return self._active.get_capabilities(model_name) if self._active else ModelCapabilities()
 
     def connection_status(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
         """Return status of all configured providers (with 30s TTL cache)."""

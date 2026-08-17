@@ -19,9 +19,17 @@ class ToolManager:
         self.timeout = 180
         from ultron.tool_registry import CommandRunner
         self.command_runner = CommandRunner(self.workspace_root, timeout=self.timeout)
-        self.current_process = None
         self.execution_logs = []
         self.last_error = None
+
+    @property
+    def current_process(self):
+        return getattr(self.command_runner, "current_process", None)
+
+    @current_process.setter
+    def current_process(self, val):
+        if hasattr(self, "command_runner"):
+            self.command_runner.current_process = val
 
     def _is_ignored(self, path: str) -> bool:
         """Check if a path matches any ignore patterns."""
@@ -168,7 +176,10 @@ class ToolManager:
         """Kills the active process group cleanly."""
         if not self.current_process:
             return
-        self.last_error = "Command was cancelled by the user."
+        msg = "Command was cancelled by the user."
+        self.last_error = msg
+        if hasattr(self, "command_runner"):
+            self.command_runner.last_error = msg
         try:
             if os.name == 'nt':
                 # Sending CTRL_BREAK_EVENT kills the process group on Windows
