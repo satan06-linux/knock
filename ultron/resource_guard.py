@@ -77,6 +77,22 @@ class ResourceGuard:
         self.files_created_count += 1
         self.total_bytes_written += content_length
 
+    def get_process_timeout(self) -> int:
+        """Return maximum process execution timeout in seconds."""
+        return self.limits.max_process_time
+
+    def check_workspace_delta(self, additional_bytes: int):
+        """Check if adding additional_bytes exceeds total workspace delta limit."""
+        if self.total_bytes_written + additional_bytes > self.limits.max_workspace_delta_bytes:
+            raise ResourceExceededError(
+                f"Resource budget exceeded: total workspace delta bytes limit "
+                f"({self.limits.max_workspace_delta_bytes} bytes) reached."
+            )
+
+    def record_workspace_delta(self, delta_bytes: int):
+        """Record workspace delta bytes in usage state."""
+        self.total_bytes_written += max(0, delta_bytes)
+
     def truncate_output(self, output: str) -> str:
         """Truncate command or file read output if it exceeds max_output_bytes."""
         if not output:

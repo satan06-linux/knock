@@ -273,12 +273,23 @@ class ToolExecutor:
                     risk_level="CRITICAL",
                 )
 
-        # ── Step 6: Checkpoint before write/destructive ops ─────────────
-        if tool_name in ("write_file", "patch_file") and self.checkpoint and path:
+        # ── Step 6: Checkpoint before write/destructive ops & ResourceGuard file checks ──
+        if tool_name in ("write_file", "patch_file") and path:
+            content_bytes = len((args.get("content") or args.get("replacement_content") or "").encode("utf-8"))
             try:
-                self.checkpoint.record_before_edit(path)
-            except Exception:
-                pass
+                self.resource_guard.check_file_creation(content_bytes)
+            except ResourceExceededError as err:
+                self._emit(EventType.TOOL_DENIED, tool_name, str(err), decision="BLOCK", risk="HIGH", resource=path)
+                return ToolExecutionResult(
+                    tool_name=tool_name, success=False, was_blocked=True,
+                    result=f"Error: {err}", raw_result="",
+                    decision_chain={"resource_guard": "EXCEEDED"}, risk_level="HIGH"
+                )
+            if self.checkpoint:
+                try:
+                    self.checkpoint.record_before_edit(path)
+                except Exception:
+                    pass
 
         # ── Step 7: Execute ──────────────────────────────────────────────
         self._emit(EventType.TOOL_ALLOWED, tool_name,
