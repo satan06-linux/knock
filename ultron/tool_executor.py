@@ -378,7 +378,7 @@ class ToolExecutor:
                 args.get("replacement_content"),
             )
         elif tool_name == "run_command":
-            return self.tools.run_command(args.get("command"))
+            return self.tools.run_command(args.get("command"), timeout=self.resource_guard.get_process_timeout())
         elif tool_name == "git_commit":
             return self.tools.git_commit(args.get("message"))
         else:

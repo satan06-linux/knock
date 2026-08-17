@@ -17,6 +17,8 @@ class ToolManager:
             "build", "dist", "*.egg-info", "*.pyc", "*.o", "*.bin"
         ]
         self.timeout = 180
+        from ultron.tool_registry import CommandRunner
+        self.command_runner = CommandRunner(self.workspace_root, timeout=self.timeout)
         self.current_process = None
         self.execution_logs = []
         self.last_error = None
@@ -181,90 +183,38 @@ class ToolManager:
             except Exception:
                 pass
 
-    def run_command(self, command: str) -> str:
-        """Executes terminal command inside the workspace root (supporting group cancellation)."""
-        import time
-        try:
-            timeout = getattr(self, "timeout", 180)
-            
-            creationflags = 0
-            if os.name == 'nt':
-                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-                
-            self.current_process = subprocess.Popen(
-                command,
-                shell=True,
-                cwd=self.workspace_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                creationflags=creationflags,
-                preexec_fn=None if os.name == 'nt' else os.setsid
-            )
-            
-            start_time = time.time()
-            try:
-                while self.current_process.poll() is None:
-                    elapsed = time.time() - start_time
-                    if elapsed > timeout:
-                        self.terminate_current_process()
-                        self.last_error = f"Command '{command}' timed out (exceeded {timeout}s)."
-                        return f"Error: Command timed out (exceeded {timeout}s)."
-                    time.sleep(0.1)
-                
-                stdout, stderr = self.current_process.communicate()
-            except KeyboardInterrupt:
-                self.terminate_current_process()
-                self.last_error = f"Command '{command}' was cancelled by the user."
-                raise
-            except Exception as e:
-                self.terminate_current_process()
-                self.last_error = f"Command '{command}' failed with error: {str(e)}"
-                raise e
-                
-            exit_code = self.current_process.returncode
-            self.current_process = None
-            
-            def truncate_str(text: str, limit: int = 3000) -> str:
-                if not text:
-                    return ""
-                if len(text) <= limit * 2:
-                    return text
-                truncated_len = len(text) - (limit * 2)
-                return f"{text[:limit]}\n\n... [truncated {truncated_len} characters] ...\n\n{text[-limit:]}"
-                
-            stdout_tr = truncate_str(stdout)
-            stderr_tr = truncate_str(stderr)
-            
-            output = []
-            if stdout_tr:
-                output.append(f"--- Stdout ---\n{stdout_tr}")
-            if stderr_tr:
-                output.append(f"--- Stderr ---\n{stderr_tr}")
-                
-            out_str = "\n".join(output) if output else "(No output)"
-            
-            # Save logs
-            log_entry = {
-                "command": command,
-                "exit_code": exit_code,
-                "stdout": stdout,
-                "stderr": stderr
-            }
-            self.execution_logs.append(log_entry)
-            if len(self.execution_logs) > 50:
-                self.execution_logs.pop(0)
-                
-            if exit_code != 0:
-                self.last_error = f"Command '{command}' exited with code {exit_code}.\nStdout:\n{stdout}\nStderr:\n{stderr}"
-                
-            return f"Command exited with code {exit_code}\n{out_str}"
-        except KeyboardInterrupt:
-            # Let KeyboardInterrupt propagate to REPL handler
-            raise
-        except Exception as e:
-            self.current_process = None
-            return f"Error running command: {str(e)}"
+    def run_command(self, command: str, timeout: Optional[int] = None) -> str:
+        """Executes terminal command using the single CommandRunner execution engine."""
+        effective_timeout = timeout or getattr(self, "timeout", 180)
+        cmd_result = self.command_runner.run(command, cwd=self.workspace_root, timeout=effective_timeout)
+        self.last_error = self.command_runner.last_error
+
+        if cmd_result.timed_out:
+            return f"Error: Command timed out (exceeded {effective_timeout}s)."
+        if cmd_result.cancelled:
+            return f"Error: Command '{command}' was cancelled by the user."
+
+        out_parts = []
+        if cmd_result.stdout:
+            out_parts.append(f"--- Stdout ---\n{cmd_result.stdout}")
+        if cmd_result.stderr:
+            out_parts.append(f"--- Stderr ---\n{cmd_result.stderr}")
+        out_str = "\n".join(out_parts) if out_parts else "(No output)"
+
+        log_entry = {
+            "command": command,
+            "exit_code": cmd_result.exit_code,
+            "stdout": cmd_result.stdout,
+            "stderr": cmd_result.stderr,
+        }
+        self.execution_logs.append(log_entry)
+        if len(self.execution_logs) > 50:
+            self.execution_logs.pop(0)
+
+        if cmd_result.exit_code != 0:
+            self.last_error = f"Command '{command}' exited with code {cmd_result.exit_code}.\nStdout:\n{cmd_result.stdout}\nStderr:\n{cmd_result.stderr}"
+
+        return f"Command exited with code {cmd_result.exit_code}\n{out_str}"
 
     def execute_command_with_policy(
         self,

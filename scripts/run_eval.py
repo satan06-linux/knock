@@ -263,7 +263,13 @@ def main():
             json.dump(results, f, indent=2)
         console.print(f"[dim]Results saved to {args.output}[/dim]")
 
-    all_passed = display_results(results, console)
+    try:
+        all_passed = display_results(results, console)
+    except Exception:
+        total = len(results)
+        passed = sum(1 for r in results if r["passed"])
+        print(f"\n{passed}/{total} scenarios passed.")
+        all_passed = (passed == total)
     sys.exit(0 if all_passed else 1)
 
 

@@ -116,10 +116,11 @@ class CommandRunner:
         self.execution_logs: List[CommandResult] = []
         self.last_error: Optional[str] = None
 
-    def run(self, command: str, cwd: Optional[str] = None) -> CommandResult:
+    def run(self, command: str, cwd: Optional[str] = None, timeout: Optional[int] = None) -> CommandResult:
         """Execute command and return structured CommandResult."""
         import signal
         work_dir = cwd or self.workspace_root
+        effective_timeout = timeout if timeout is not None else self.timeout
         start = time.time()
 
         creationflags = 0
@@ -146,7 +147,7 @@ class CommandRunner:
             stdout, stderr = "", ""
 
             try:
-                stdout, stderr = self.current_process.communicate(timeout=self.timeout)
+                stdout, stderr = self.current_process.communicate(timeout=effective_timeout)
                 exit_code = self.current_process.returncode
             except subprocess.TimeoutExpired:
                 self._kill_current()
