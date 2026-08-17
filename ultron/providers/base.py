@@ -47,12 +47,36 @@ class ToolCall:
     name: str
     arguments: Dict[str, Any]
 
+    def __getitem__(self, item: str) -> Any:
+        try:
+            return getattr(self, item)
+        except AttributeError:
+            raise KeyError(item)
+
+    def __contains__(self, item: str) -> bool:
+        return hasattr(self, item)
+
+    def get(self, item: str, default: Any = None) -> Any:
+        return getattr(self, item, default)
+
 
 @dataclass
 class ChatChunk:
     type: str           # "content" | "tool_calls" | "done"
     delta: str = ""
     tool_calls: List[ToolCall] = field(default_factory=list)
+
+    def __getitem__(self, item: str) -> Any:
+        try:
+            return getattr(self, item)
+        except AttributeError:
+            raise KeyError(item)
+
+    def __contains__(self, item: str) -> bool:
+        return hasattr(self, item)
+
+    def get(self, item: str, default: Any = None) -> Any:
+        return getattr(self, item, default)
 
 
 class ModelProvider(ABC):

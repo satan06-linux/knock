@@ -95,11 +95,17 @@ class TestProviderCapabilities(unittest.TestCase):
         chunk = ChatChunk(type="content", delta="hello")
         self.assertEqual(chunk.type, "content")
         self.assertEqual(chunk.delta, "hello")
+        self.assertEqual(chunk["type"], "content")
+        self.assertEqual(chunk["delta"], "hello")
+        self.assertEqual(chunk.get("type"), "content")
+        self.assertTrue("type" in chunk)
 
     def test_tool_call(self):
         tc = ToolCall(id="call_1", name="write_file", arguments={"path": "a.py", "content": "x"})
         self.assertEqual(tc.name, "write_file")
         self.assertEqual(tc.arguments["path"], "a.py")
+        self.assertEqual(tc["name"], "write_file")
+        self.assertEqual(tc.get("id"), "call_1")
 
 
 # ---------------------------------------------------------------------------
