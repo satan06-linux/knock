@@ -186,6 +186,21 @@ class CheckpointManager:
         rel_path = op["file"]
         return self._restore_file(rel_path, op, console)
 
+    def rollback_transaction(self, transaction_id: str, console: Console) -> bool:
+        """Best-effort transaction-oriented rollback for all operations in a transaction."""
+        ops = [o for o in self._operation_log if o.get("transaction_id") == transaction_id]
+        if not ops:
+            console.print(f"[yellow]No logged operations found for transaction {transaction_id}.[/yellow]")
+            return False
+
+        console.print(f"[bold cyan]Rolling back transaction {transaction_id}...[/bold cyan]")
+        success_count = 0
+        for op in reversed(ops):
+            rel_path = op.get("file")
+            if rel_path and self._restore_file(rel_path, op, console):
+                success_count += 1
+        return success_count == len(ops)
+
     def _restore_file(self, rel_path: str, meta: Dict[str, Any], console: Console) -> bool:
         """Internal: restore a single file from backup. Returns True on success."""
         abs_path = os.path.join(self.workspace_root, rel_path)

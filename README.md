@@ -2,7 +2,7 @@
 
 > A terminal-based AI coding agent that runs locally on Ollama or any cloud provider.
 
-[![CI](https://github.com/your-username/ultron/actions/workflows/pytest.yml/badge.svg)](https://github.com/your-username/ultron/actions/workflows/pytest.yml)
+[![CI](https://github.com/satan06-linux/knock/actions/workflows/pytest.yml/badge.svg)](https://github.com/satan06-linux/knock/actions/workflows/pytest.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-381%20passing-brightgreen)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -98,8 +98,8 @@ Ultron is a workspace-first, local-first terminal AI coding agent. Install it on
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/ultron.git
-cd ultron
+git clone https://github.com/satan06-linux/knock.git
+cd knock
 
 # Install dependencies
 pip install -r requirements.txt

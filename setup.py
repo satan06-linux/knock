@@ -9,6 +9,7 @@ setup(
         "prompt_toolkit>=3.0.0",
         "httpx>=0.24.0",
         "click>=8.0.0",
+        "keyring>=24.0.0",
     ],
     entry_points={
         "console_scripts": [
@@ -19,5 +20,5 @@ setup(
     },
     author="Ultron AI Team",
     description="Advanced local AI coding agent running on Ollama qwen2.5-coder",
-    python_requires=">=3.8",
+    python_requires=">=3.11",
 )

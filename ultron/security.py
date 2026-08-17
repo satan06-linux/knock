@@ -78,23 +78,28 @@ def validate_path(path: str, workspace_root: str) -> str:
         
     return resolved
 
-def is_side_effect_command(cmd: str) -> Tuple[bool, str]:
-    """Checks if a command targets dependency install, migrations, servers, network, or destruction."""
-    cmd_lower = cmd.lower()
-    # 1. Dependency
-    if any(k in cmd_lower for k in ["npm install", "yarn add", "pnpm add", "pip install", "cargo add", "go get"]):
+def is_side_effect_command(cmd: str, workspace_root: str = ".") -> Tuple[bool, str]:
+    """Checks if a command targets dependency install, migrations, servers, network, or destruction using CommandSecurityLayer."""
+    from ultron.command_security import CommandSecurityLayer, CommandCapability
+    
+    csl = CommandSecurityLayer(workspace_root)
+    decision = csl.evaluate(cmd, is_interactive=True)
+    
+    if decision.capability == CommandCapability.DESTRUCTIVE_COMMAND:
+        return True, "destructive filesystem operation"
+    if decision.capability == CommandCapability.PACKAGE_COMMAND:
         return True, "dependency installation"
-    # 2. Migration
+    if decision.capability == CommandCapability.NETWORK_COMMAND:
+        return True, "network/remote connectivity"
+    if decision.capability == CommandCapability.PRIVILEGED_COMMAND:
+        return True, "privileged execution"
+    if decision.capability == CommandCapability.UNKNOWN_COMMAND:
+        return True, "unrecognized shell command"
+
+    cmd_lower = cmd.lower()
     if any(k in cmd_lower for k in ["migrate", "alembic upgrade", "db push", "db seed"]):
         return True, "database migration/mutation"
-    # 3. Server launch
     if any(k in cmd_lower for k in ["run dev", "npm start", "yarn start", "pnpm start", "python app.py", "python main.py", "cargo run", "go run"]):
         return True, "server/application execution"
-    # 4. Destructive
-    if any(k in cmd_lower for k in ["rm ", "del ", "git clean", "git reset --hard", "shred"]):
-        return True, "destructive filesystem operation"
-    # 5. Network
-    if any(k in cmd_lower for k in ["curl ", "wget ", "ping ", "http "]):
-        return True, "network/remote connectivity"
-        
-    return False, ""
+
+    return decision.requires_explicit_approval, decision.reason

@@ -41,6 +41,8 @@ from ultron.scope_manager import ScopeManager, ScopeDecisionResult, RiskClassifi
 from ultron.secret_redactor import SecretRedactor
 from ultron.audit import AuditLogger, AuditEvent, EventType
 from ultron.security import validate_path
+from ultron.command_security import CommandSecurityLayer, CommandCapability
+from ultron.resource_guard import ResourceGuard, ResourceExceededError
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +69,7 @@ class ToolExecutionResult:
 class ToolExecutor:
     """
     Single authorized execution pipeline for all model-driven tool calls.
-    Cannot be bypassed. Every action passes through Scope → Policy → Execute.
+    Cannot be bypassed. Every action passes through Scope → CommandSecurity → Policy → ResourceGuard → Execute.
     """
 
     def __init__(
@@ -97,6 +99,8 @@ class ToolExecutor:
         self.transaction_id = transaction_id
         self._redactor = SecretRedactor()
         self._risk_classifier = RiskClassifier()
+        self.command_security = CommandSecurityLayer(self.workspace_root)
+        self.resource_guard = ResourceGuard()
 
     def _log(self, msg: str, style: str = "dim"):
         if self.console:
@@ -155,6 +159,38 @@ class ToolExecutor:
         risk_level = tool_def.risk_level
         path = args.get("path") or args.get("command") or ""
 
+        # ── Step 1.5: ResourceGuard Budget Check ─────────────────────────
+        try:
+            self.resource_guard.check_tool_call()
+        except ResourceExceededError as err:
+            self._emit(EventType.TOOL_DENIED, tool_name, str(err), decision="BLOCK", risk="HIGH", resource=path)
+            return ToolExecutionResult(
+                tool_name=tool_name, success=False, was_blocked=True,
+                result=f"Error: {err}", raw_result="",
+                decision_chain={"resource_guard": "EXCEEDED"}, risk_level="HIGH"
+            )
+
+        # ── Step 1.6: CommandSecurityLayer Evaluation (run_command) ─────
+        cmd_security_ask = False
+        if tool_name == "run_command":
+            cmd_str = args.get("command", "")
+            cmd_decision = self.command_security.evaluate(
+                cmd_str, is_interactive=bool(user_confirm_callback)
+            )
+            if cmd_decision.decision == ScopeDecisionResult.BLOCK:
+                self._emit(EventType.SCOPE_BLOCKED, tool_name,
+                           cmd_decision.reason, decision="BLOCK",
+                           risk=cmd_decision.risk_level.value, resource=cmd_str)
+                return ToolExecutionResult(
+                    tool_name=tool_name, success=False, was_blocked=True,
+                    result=f"Error: Command blocked by CommandSecurityLayer. {cmd_decision.reason}",
+                    raw_result="",
+                    decision_chain={"command_security": "BLOCK", "reason": cmd_decision.reason},
+                    risk_level=cmd_decision.risk_level.value,
+                )
+            if cmd_decision.requires_explicit_approval:
+                cmd_security_ask = True
+
         self._emit(EventType.TOOL_REQUESTED, tool_name,
                    f"Tool requested: {tool_name}",
                    risk=risk_level.value, resource=path,
@@ -201,7 +237,7 @@ class ToolExecutor:
         policy_ask = policy_decision.decision == PolicyDecisionResult.ASK
 
         # ── Step 4: Approval gate ─────────────────────────────────────────
-        needs_approval = scope_ask or policy_ask or tool_def.requires_approval
+        needs_approval = scope_ask or policy_ask or cmd_security_ask or tool_def.requires_approval
         approved = not needs_approval  # pre-approved if no ask needed
 
         if needs_approval and user_confirm_callback:
@@ -262,6 +298,9 @@ class ToolExecutor:
                 decision_chain={"execution": "FAILED"},
                 risk_level=risk_level.value,
             )
+
+        # Enforce output truncation via ResourceGuard
+        raw_result = self.resource_guard.truncate_output(raw_result)
 
         # ── Step 8: ChangeTracker ────────────────────────────────────────
         if tool_name in ("write_file", "patch_file") and self.change_tracker and path:

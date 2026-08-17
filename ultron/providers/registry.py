@@ -166,7 +166,8 @@ class ProviderRegistry:
         if saved_id != "ollama":
             from ultron.providers.ollama import OllamaProvider
             self._fallback = OllamaProvider()
-            self._fallback_provider_id = "ollama"
+        self._status_cache: Optional[List[Dict[str, Any]]] = None
+        self._status_cache_time: float = 0.0
 
     @property
     def active(self) -> Optional[ModelProvider]:
@@ -188,8 +189,16 @@ class ProviderRegistry:
             return self._fallback
         return None
 
-    def connection_status(self) -> List[Dict[str, Any]]:
-        """Return status of all configured providers."""
+    def connection_status(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """Return status of all configured providers (with 30s TTL cache)."""
+        import time
+        now = time.time()
+        if not force_refresh and self._status_cache and (now - self._status_cache_time < 30.0):
+            # Update active flag in cached results
+            for item in self._status_cache:
+                item["active"] = (self._active_provider_id == item["id"])
+            return self._status_cache
+
         statuses = []
         for p in PROVIDER_CATALOG:
             pid = p["id"]
@@ -222,6 +231,8 @@ class ProviderRegistry:
                     "has_key": False,
                     "active": False,
                 })
+        self._status_cache = statuses
+        self._status_cache_time = now
         return statuses
 
     def interactive_pick(self, console) -> Optional[ModelProvider]:

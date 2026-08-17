@@ -95,7 +95,10 @@ class UltronREPL:
     def __init__(self, agent: UltronAgent):
         self.agent = agent
         self.console = Console()
-        self.history_file = os.path.join(self.agent.workspace_root, ".ultron_history")
+        path_hash = hashlib.md5(self.agent.workspace_root.encode("utf-8")).hexdigest()
+        history_dir = os.path.join(os.path.expanduser("~"), ".ultron", "history")
+        os.makedirs(history_dir, exist_ok=True)
+        self.history_file = os.path.join(history_dir, f"{path_hash}.history")
         self.session = PromptSession(
             history=FileHistory(self.history_file),
             completer=UltronCompleter(self.agent.workspace_root, self.agent.context)

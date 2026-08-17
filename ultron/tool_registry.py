@@ -439,7 +439,7 @@ class ToolRegistry:
             ToolDefinition(
                 name="list_dir",
                 description="List contents of a directory in the workspace.",
-                schema={"type": "object", "properties": {"path": {"type": "string"}}},
+                schema={"type": "object", "properties": {"path": {"type": "string", "minLength": 1}}, "additionalProperties": False},
                 risk_level=RiskLevel.READ_ONLY,
             ),
             ToolDefinition(
@@ -448,11 +448,12 @@ class ToolRegistry:
                 schema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
-                        "start_line": {"type": "integer"},
-                        "end_line": {"type": "integer"},
+                        "path": {"type": "string", "minLength": 1},
+                        "start_line": {"type": "integer", "minimum": 1},
+                        "end_line": {"type": "integer", "minimum": 1},
                     },
                     "required": ["path"],
+                    "additionalProperties": False,
                 },
                 risk_level=RiskLevel.READ_ONLY,
             ),
@@ -462,17 +463,18 @@ class ToolRegistry:
                 schema={
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string"},
+                        "query": {"type": "string", "minLength": 1},
                         "path": {"type": "string"},
                     },
                     "required": ["query"],
+                    "additionalProperties": False,
                 },
                 risk_level=RiskLevel.READ_ONLY,
             ),
             ToolDefinition(
                 name="git_status",
                 description="Get current git status of the workspace.",
-                schema={"type": "object", "properties": {}},
+                schema={"type": "object", "properties": {}, "additionalProperties": False},
                 risk_level=RiskLevel.READ_ONLY,
             ),
             ToolDefinition(
@@ -481,10 +483,11 @@ class ToolRegistry:
                 schema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
+                        "path": {"type": "string", "minLength": 1},
                         "content": {"type": "string"},
                     },
                     "required": ["path", "content"],
+                    "additionalProperties": False,
                 },
                 risk_level=RiskLevel.WORKSPACE_WRITE,
             ),
@@ -494,11 +497,12 @@ class ToolRegistry:
                 schema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
+                        "path": {"type": "string", "minLength": 1},
                         "search_content": {"type": "string"},
                         "replacement_content": {"type": "string"},
                     },
                     "required": ["path", "search_content", "replacement_content"],
+                    "additionalProperties": False,
                 },
                 risk_level=RiskLevel.WORKSPACE_WRITE,
             ),
@@ -507,8 +511,9 @@ class ToolRegistry:
                 description="Run a shell command in the workspace root.",
                 schema={
                     "type": "object",
-                    "properties": {"command": {"type": "string"}},
+                    "properties": {"command": {"type": "string", "minLength": 1}},
                     "required": ["command"],
+                    "additionalProperties": False,
                 },
                 risk_level=RiskLevel.WORKSPACE_WRITE,
             ),
@@ -517,8 +522,9 @@ class ToolRegistry:
                 description="Stage and commit changes to git.",
                 schema={
                     "type": "object",
-                    "properties": {"message": {"type": "string"}},
+                    "properties": {"message": {"type": "string", "minLength": 1}},
                     "required": ["message"],
+                    "additionalProperties": False,
                 },
                 risk_level=RiskLevel.GIT_WRITE,
             ),

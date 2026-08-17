@@ -17,6 +17,21 @@ class ProviderCapabilities:
 
 
 @dataclass
+class ModelInfo:
+    """Rich dynamic metadata for a model capability query."""
+    name: str
+    provider: str
+    context_window: int = 4096
+    max_output_tokens: int = 4096
+    tool_calling: bool = True
+    structured_output: bool = True
+    streaming: bool = True
+    vision: bool = False
+    reasoning: bool = False
+    availability: bool = True
+
+
+@dataclass
 class ToolCall:
     id: str
     name: str
@@ -67,6 +82,21 @@ class ModelProvider(ABC):
     @abstractmethod
     def capabilities(self) -> ProviderCapabilities:
         """Return capability metadata for the active model."""
+
+    def get_model_info(self, model_name: Optional[str] = None) -> ModelInfo:
+        """Return rich ModelInfo metadata for specified or active model."""
+        target_name = model_name or self.model_name
+        caps = self.capabilities()
+        return ModelInfo(
+            name=target_name,
+            provider=self.provider_name,
+            context_window=caps.context_window,
+            max_output_tokens=caps.max_output_tokens,
+            tool_calling=caps.native_tools,
+            streaming=caps.streaming,
+            vision=caps.vision,
+            availability=self.health_check(),
+        )
 
     @abstractmethod
     def chat(

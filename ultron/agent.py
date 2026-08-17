@@ -332,6 +332,35 @@ class UltronAgent:
             "5. After successfully editing code, you can use 'git_commit' to save changes."
         )
 
+    def _build_convention_context(self, user_prompt: str) -> str:
+        """Helper to build convention context for FEATURE and REFACTOR tasks."""
+        if not self.current_task or self.current_task.intent not in (TaskIntent.FEATURE, TaskIntent.REFACTOR):
+            return ""
+        if not self.repo_map or not self.repo_map.index:
+            return ""
+        try:
+            from ultron.analyzer import ConventionFinder
+            finder = ConventionFinder(self.workspace_root, self.repo_map)
+            conventions = finder.get_project_conventions(user_prompt)
+            similar = conventions.get("similar_files", [])[:3]
+            if similar:
+                lines = [
+                    "=== CONVENTION CONTEXT ===",
+                    "Before writing new code, study these similar existing files:",
+                ]
+                for sf in similar:
+                    lines.append(f"- {sf}")
+                lines.append("")
+                lines.append(
+                    "Follow their naming, folder layout, import style, "
+                    "error handling, and test patterns."
+                )
+                lines.append("==========================")
+                return "\n".join(lines)
+        except Exception:
+            pass
+        return ""
+
     def get_trimmed_history_messages(self, max_turns: int = 12) -> List[Dict[str, Any]]:
         """
         Groups messages into complete turns (user query -> assistant content/tool calls -> tool replies).
@@ -640,59 +669,9 @@ class UltronAgent:
             provider=getattr(self.model, "provider_name", "Ollama"),
         )
 
-        # Auto-inject conventions for FEATURE/REFACTOR tasks
-        self._convention_context = ""
-        if self.current_task.intent in (TaskIntent.FEATURE, TaskIntent.REFACTOR):
-            if self.repo_map.index:
-                try:
-                    from ultron.analyzer import ConventionFinder
-                    cf = ConventionFinder(self.workspace_root, self.repo_map)
-                    conventions = cf.get_project_conventions(user_prompt)
-                    similar = conventions.get("similar_files", [])
-                    if similar:
-                        lines = ["=== CONVENTION CONTEXT ===",
-                                 "Before writing new code, study these similar existing files:"]
-                        for f in similar[:3]:
-                            lines.append(f"- {f}")
-                        lines += [
-                            "",
-                            "Follow their naming, folder layout, import style, error handling, and test patterns.",
-                            "==========================="
-                        ]
-                        self._convention_context = "\n".join(lines)
-                except Exception:
-                    pass
+        # Build convention context once for FEATURE/REFACTOR tasks
+        self._convention_context = self._build_convention_context(user_prompt)
         self._task_evidence.clear()
-
-        # Reset convention context for this run
-        self._convention_context = ""
-
-        # Convention auto-inject: prepend convention block for FEATURE / REFACTOR tasks
-        if (
-            self.current_task.intent in (TaskIntent.FEATURE, TaskIntent.REFACTOR)
-            and self.repo_map.index
-        ):
-            try:
-                finder = ConventionFinder(self.workspace_root, self.repo_map)
-                conventions = finder.get_project_conventions(user_prompt)
-                similar = conventions.get("similar_files", [])[:3]
-                if similar:
-                    lines = [
-                        "=== CONVENTION CONTEXT ===",
-                        "Before writing new code, study these similar existing files:",
-                    ]
-                    for sf in similar:
-                        score = len(finder.find_similar_files(user_prompt, max_results=10))
-                        lines.append(f"- {sf}")
-                    lines.append("")
-                    lines.append(
-                        "Follow their naming, folder layout, import style, "
-                        "error handling, and test patterns."
-                    )
-                    lines.append("==========================")
-                    self._convention_context = "\n".join(lines)
-            except Exception:
-                pass  # Convention injection is best-effort; never block the run
 
         # Phase 3: auto-run refactor safety check if refactor-intent keywords detected
         prompt_lower = user_prompt.lower()

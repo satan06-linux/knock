@@ -46,7 +46,6 @@ jobs:
       - name: Run eval harness (P5.3 regression gate)
         run: |
           python scripts/run_eval.py --output eval-results.json
-        continue-on-error: true
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
