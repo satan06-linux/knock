@@ -99,10 +99,20 @@ class UltronREPL:
         history_dir = os.path.join(os.path.expanduser("~"), ".ultron", "history")
         os.makedirs(history_dir, exist_ok=True)
         self.history_file = os.path.join(history_dir, f"{path_hash}.history")
-        self.session = PromptSession(
-            history=FileHistory(self.history_file),
-            completer=UltronCompleter(self.agent.workspace_root, self.agent.context)
-        )
+        try:
+            self.session = PromptSession(
+                history=FileHistory(self.history_file),
+                completer=UltronCompleter(self.agent.workspace_root, self.agent.context)
+            )
+        except Exception:
+            from prompt_toolkit.output import DummyOutput
+            from prompt_toolkit.input import DummyInput
+            self.session = PromptSession(
+                history=FileHistory(self.history_file),
+                completer=UltronCompleter(self.agent.workspace_root, self.agent.context),
+                input=DummyInput(),
+                output=DummyOutput()
+            )
         
         # Style prompt_toolkit input bar
         self.prompt_style = Style.from_dict({
